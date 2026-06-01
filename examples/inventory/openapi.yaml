@@ -1,0 +1,215 @@
+openapi: "3.0.3"
+info:
+  title: Inventory Provider API
+  version: 0.1.0
+  description: Machine inventory management for infractl.
+
+paths:
+  /org/{orgID}/machines:
+    get:
+      operationId: listMachines
+      summary: List machines
+      tags: [inventory]
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: continue
+          in: query
+          schema:
+            type: string
+        - name: filter
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of machines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MachineList"
+    post:
+      operationId: createMachine
+      summary: Create a machine
+      tags: [inventory]
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Machine"
+      responses:
+        "201":
+          description: Machine created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Machine"
+
+  /org/{orgID}/machines/{name}:
+    get:
+      operationId: getMachine
+      summary: Get a machine by name
+      tags: [inventory]
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Machine details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Machine"
+        "404":
+          description: Machine not found
+    put:
+      operationId: updateMachine
+      summary: Update a machine
+      tags: [inventory]
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Machine"
+      responses:
+        "200":
+          description: Machine updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Machine"
+    delete:
+      operationId: deleteMachine
+      summary: Delete a machine
+      tags: [inventory]
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Machine deleted
+
+components:
+  schemas:
+    MachineSpec:
+      type: object
+      properties:
+        arch:
+          type: string
+        cpus:
+          type: integer
+        memory_mb:
+          type: integer
+        disk_gb:
+          type: integer
+        bmc_addr:
+          type: string
+
+    MachineStatus:
+      type: object
+      properties:
+        phase:
+          type: string
+          enum: [Pending, Provisioning, Ready, Failed, Deleting]
+        message:
+          type: string
+
+    Machine:
+      type: object
+      required: [name, spec]
+      properties:
+        org_id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        generation:
+          type: integer
+          readOnly: true
+        resource_version:
+          type: integer
+          readOnly: true
+        owner:
+          type: string
+        spec:
+          $ref: "#/components/schemas/MachineSpec"
+        status:
+          $ref: "#/components/schemas/MachineStatus"
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    MachineList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Machine"
+        continue:
+          type: string
+        total:
+          type: integer

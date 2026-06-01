@@ -1,0 +1,19 @@
+# Compiled binaries
+infractl
+infractl-server
+*.exe
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test output
+coverage.out
+*.test
