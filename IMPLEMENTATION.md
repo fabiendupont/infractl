@@ -55,17 +55,28 @@ Read `docs/source-projects.md` for exact file paths to reference implementations
 
 `auth/opa.go` loads Rego policies, evaluates the `allow` rule with `{subject, resource, action}` input, and caches compiled policies. Unit tests in `auth/opa_test.go`.
 
+## OSAC Gap Closure — DONE
+
+All 8 gaps identified in the OSAC compatibility analysis have been closed:
+
+1. **Store metrics** — `InstrumentedStore[R]` with Prometheus histogram per operation
+2. **Attribution logic** — `AttributionLogic` interface with `SubjectAttributionLogic` and `GuestAttributionLogic`
+3. **Finalizers** — `Finalizers` field on Resource, `DeletionTimestamp`, finalizer-aware Delete
+4. **CEL-style filters** — Extended filter parser to accept `==`, `&&`, `||` alongside classic syntax
+5. **Field masking** — `PartialUpdate` method on Store for field-level updates with optimistic concurrency
+6. **gRPC server** — `grpc/` package with Server, Gateway, auth interceptors, `GRPCProvider` interface
+7. **Protobuf adapter** — Shared `Metadata` proto message, `MetadataToProto`/`MetadataFromProto` converters
+8. **Generic gRPC server factory** — `GenericServiceHandler[R]` generating CRUD handlers from Store + Adapter
+
 ## What's Next
 
 Potential future work (not yet prioritized):
 
-- **Run integration/e2e tests end-to-end** with a running Podman/Docker daemon to validate against real PostgreSQL
-- **Initial git commit** — the entire codebase is currently untracked
+- **Build an OSAC resource as an infractl provider** — pick one resource type (e.g., Tenant) and implement it as a gRPC provider using the new framework to validate the integration end-to-end
 - **Example external provider sidecar** — a minimal out-of-process provider to demonstrate the gRPC protocol
-- **CI pipeline** — GitHub Actions or similar for build, vet, unit tests, and integration tests
-- **Documentation** — godoc, usage guide, provider authoring guide
+- **OpenTelemetry tracing** — distributed tracing for requests across REST and gRPC
 - **Additional event bus backends** — NATS, Kafka
-- **Metrics and observability** — Prometheus metrics, OpenTelemetry tracing
+- **Full CEL support** — replace the extended parser with `cel-go` AST-based translation for complex expressions
 
 ## How to Work
 
