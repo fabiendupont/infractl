@@ -169,6 +169,36 @@ func TestParseFilter_LabelWithRegularField(t *testing.T) {
 	assert.Equal(t, []interface{}{"foo", "prod"}, args)
 }
 
+// --- CEL-style syntax tests ---
+
+func TestParseFilter_CELDoubleEquals(t *testing.T) {
+	clause, args, err := ParseFilter("name==foo")
+	require.NoError(t, err)
+	assert.Equal(t, "name = ?", clause)
+	assert.Equal(t, []interface{}{"foo"}, args)
+}
+
+func TestParseFilter_CELLogicalAnd(t *testing.T) {
+	clause, args, err := ParseFilter("name==foo && cpus>=4")
+	require.NoError(t, err)
+	assert.Equal(t, "name = ? AND cpus >= ?", clause)
+	assert.Equal(t, []interface{}{"foo", "4"}, args)
+}
+
+func TestParseFilter_CELLogicalOr(t *testing.T) {
+	clause, args, err := ParseFilter("name==foo || name==bar")
+	require.NoError(t, err)
+	assert.Equal(t, "(name = ?) OR (name = ?)", clause)
+	assert.Equal(t, []interface{}{"foo", "bar"}, args)
+}
+
+func TestParseFilter_CELMixedWithClassic(t *testing.T) {
+	clause, args, err := ParseFilter("name==foo && labels.env=prod")
+	require.NoError(t, err)
+	assert.Equal(t, "name = ? AND labels->>'env' = ?", clause)
+	assert.Equal(t, []interface{}{"foo", "prod"}, args)
+}
+
 // --- Edge cases ---
 
 func TestParseFilter_SpacesAroundTerms(t *testing.T) {

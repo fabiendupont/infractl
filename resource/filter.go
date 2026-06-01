@@ -24,8 +24,13 @@ import (
 var jsonbPrefixes = []string{"labels.", "annotations."}
 
 // operators lists the supported comparison operators in order from longest
-// to shortest so that ">=" is matched before ">".
-var operators = []string{">=", "<=", "!=", ">", "<", "="}
+// to shortest so that ">=" is matched before ">" and "==" before "=".
+var operators = []string{">=", "<=", "!=", "==", ">", "<", "="}
+
+// operatorMap normalizes CEL-style operators to SQL operators.
+var operatorMap = map[string]string{
+	"==": "=",
+}
 
 // ParseFilter parses a filter expression into a GORM WHERE clause.
 //
@@ -101,20 +106,17 @@ func ParseFilter(expr string) (clause string, args []interface{}, err error) {
 	return strings.Join(orClauses, " OR "), args, nil
 }
 
-// splitOR splits an expression by the " OR " keyword. We split on " OR "
-// (with surrounding spaces) to avoid matching "OR" inside field names or values.
+// splitOR splits an expression by the " OR " or " || " keywords.
 func splitOR(expr string) []string {
-	return splitKeyword(expr, " OR ")
+	normalized := replaceKeyword(expr, " || ", " OR ")
+	return splitKeyword(normalized, " OR ")
 }
 
 // splitAND splits an expression by "," or " AND ". Commas are checked first
 // for backwards compatibility; if no commas are present, " AND " is used.
 func splitAND(expr string) []string {
-	// If the expression contains commas, split on commas.
-	// If it contains " AND ", split on that.
-	// If it contains both, we need to handle them together.
-	// Strategy: replace " AND " with "," then split on ",".
 	normalized := replaceKeyword(expr, " AND ", ",")
+	normalized = replaceKeyword(normalized, " && ", ",")
 	return strings.Split(normalized, ",")
 }
 
@@ -145,6 +147,9 @@ func parseTerm(term string) (clause string, value interface{}, err error) {
 		return "", nil, fmt.Errorf("filter term %q: invalid field name %q", term, field)
 	}
 
+	if mapped, ok := operatorMap[op]; ok {
+		op = mapped
+	}
 	sqlField := fieldToSQL(field)
 	return fmt.Sprintf("%s %s ?", sqlField, op), val, nil
 }
