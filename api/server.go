@@ -20,6 +20,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 )
 
@@ -51,10 +52,12 @@ func NewServer(cfg ServerConfig, logger zerolog.Logger) *Server {
 
 	// Install standard middleware stack.
 	r.Use(RequestID)
+	r.Use(Metrics)
 	r.Use(RequestLogger(logger))
 	r.Use(Recoverer(logger))
 
-	// Health check endpoint -- always available, no auth.
+	// Operational endpoints -- always available, no auth.
+	r.Handle("/metrics", promhttp.Handler())
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
