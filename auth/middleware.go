@@ -41,8 +41,8 @@ func SubjectFromContext(ctx context.Context) (*Subject, error) {
 	return sub, nil
 }
 
-// contextWithSubject stores a Subject in the context.
-func contextWithSubject(ctx context.Context, sub *Subject) context.Context {
+// ContextWithSubject stores a Subject in the context.
+func ContextWithSubject(ctx context.Context, sub *Subject) context.Context {
 	return context.WithValue(ctx, subjectContextKey, sub)
 }
 
@@ -121,7 +121,7 @@ func AuthN(authn Authenticator) func(http.Handler) http.Handler {
 				http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
 				return
 			}
-			ctx := contextWithSubject(r.Context(), subject)
+			ctx := ContextWithSubject(r.Context(), subject)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

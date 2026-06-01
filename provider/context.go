@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog"
 	"gorm.io/gorm"
 
+	"github.com/fabiendupont/infractl/auth"
 	"github.com/fabiendupont/infractl/events"
 	"github.com/fabiendupont/infractl/work"
 )
@@ -55,4 +56,8 @@ type Context struct {
 	// Queue is the task queue for async background work. Nil when
 	// running without queue support.
 	Queue work.Queue
+
+	// Attribution determines the creator assigned to newly created
+	// resources. Nil when running without attribution support.
+	Attribution auth.AttributionLogic
 }
