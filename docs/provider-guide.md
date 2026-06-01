@@ -97,27 +97,36 @@ Handlers follow standard `net/http` conventions. The tenant OrgID is available f
 
 ```go
 func (p *InventoryProvider) listMachines(w http.ResponseWriter, r *http.Request) {
-    orgID := auth.OrgIDFromContext(r.Context())
-    filter := r.URL.Query().Get("filter")
-    continueToken := r.URL.Query().Get("continue")
-    limit := parseLimitParam(r, 100)
+    orgID, err := auth.OrgIDFromContext(r.Context())
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
 
-    machines, nextToken, err := p.store.List(r.Context(), orgID, resource.ListOptions{
-        Filter:   filter,
+    limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+    if limit <= 0 {
+        limit = 100
+    }
+
+    list, err := p.store.List(r.Context(), orgID, resource.ListOptions{
         Limit:    limit,
-        Continue: continueToken,
+        Continue: r.URL.Query().Get("continue"),
+        Filter:   r.URL.Query().Get("filter"),
     })
     if err != nil {
         http.Error(w, err.Error(), http.StatusInternalServerError)
         return
     }
 
-    resp := ListResponse{Items: machines, Continue: nextToken}
-    json.NewEncoder(w).Encode(resp)
+    writeJSON(w, http.StatusOK, list)
 }
 
 func (p *InventoryProvider) getMachine(w http.ResponseWriter, r *http.Request) {
-    orgID := auth.OrgIDFromContext(r.Context())
+    orgID, err := auth.OrgIDFromContext(r.Context())
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
     name := chi.URLParam(r, "name")
 
     machine, err := p.store.Get(r.Context(), orgID, name)
@@ -130,7 +139,7 @@ func (p *InventoryProvider) getMachine(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    json.NewEncoder(w).Encode(machine)
+    writeJSON(w, http.StatusOK, machine)
 }
 ```
 
@@ -187,24 +196,29 @@ package inventory
 import "github.com/fabiendupont/infractl/resource"
 
 type MachineSpec struct {
-    Architecture string `json:"architecture"`
-    CPUCores     int    `json:"cpu_cores"`
-    MemoryMB     int    `json:"memory_mb"`
-    DiskGB       int    `json:"disk_gb"`
+    Arch     string `json:"arch,omitempty"`
+    CPUs     int    `json:"cpus,omitempty"`
+    MemoryMB int    `json:"memory_mb,omitempty"`
+    DiskGB   int    `json:"disk_gb,omitempty"`
 }
 
 type MachineStatus struct {
-    State   string `json:"state"`   // pending, ready, failed
-    Message string `json:"message"` // human-readable status detail
+    Phase   string `json:"phase"`
+    Message string `json:"message,omitempty"`
 }
 
 type Machine struct {
     resource.Resource
-    Spec   MachineSpec   `gorm:"type:jsonb"`
-    Status MachineStatus `gorm:"type:jsonb"`
+    Spec   resource.JSONField[MachineSpec]   `gorm:"type:jsonb" json:"spec"`
+    Status resource.JSONField[MachineStatus] `gorm:"type:jsonb" json:"status"`
 }
 
 func (Machine) TableName() string { return "machines" }
+
+// SpecBytes enables automatic Generation tracking on spec changes.
+func (m *Machine) SpecBytes() ([]byte, error) {
+    return resource.MarshalSpec(m.Spec.Data)
+}
 ```
 
 ### Store registration
@@ -236,11 +250,11 @@ The `GenericStore[Machine]` provides Create, Get, List, Update, and Delete opera
 For production use, prefer versioned migrations over AutoMigrate:
 
 ```go
-func (p *InventoryProvider) MigrationSource() provider.MigrationSource {
-    return provider.MigrationSource{
-        Name:       "inventory",
-        Migrations: inventoryMigrations, // embed.FS with SQL files
-    }
+//go:embed migrations/*.sql
+var inventoryMigrations embed.FS
+
+func (p *InventoryProvider) MigrationSource() fs.FS {
+    return inventoryMigrations
 }
 
 var _ provider.MigrationProvider = (*InventoryProvider)(nil)
@@ -261,18 +275,24 @@ Sync hooks run inline within the caller's transaction. Returning an error aborts
 func (p *StorageProvider) Init(ctx provider.Context) error {
     // ...
 
-    ctx.Hooks.RegisterSync("machine.pre_delete", p.blockDeleteIfVolumesAttached)
+    ctx.Registry.RegisterHook(provider.SyncHook{
+        Feature: "machines",
+        Event:   "pre_delete",
+        Handler: p.blockDeleteIfVolumesAttached,
+    })
 
     return nil
 }
 
 func (p *StorageProvider) blockDeleteIfVolumesAttached(
-    ctx context.Context, event provider.HookEvent,
+    ctx context.Context, payload interface{},
 ) error {
-    machineName := event.ResourceName
-    orgID := event.OrgID
+    machine, ok := payload.(*Machine)
+    if !ok {
+        return nil
+    }
 
-    volumes, err := p.volumeStore.ListByMachine(ctx, orgID, machineName)
+    volumes, err := p.volumeStore.ListByMachine(ctx, machine.OrgID, machine.Name)
     if err != nil {
         return fmt.Errorf("checking volumes: %w", err)
     }
@@ -280,7 +300,7 @@ func (p *StorageProvider) blockDeleteIfVolumesAttached(
     if len(volumes) > 0 {
         return fmt.Errorf(
             "cannot delete machine %q: %d volumes still attached",
-            machineName, len(volumes),
+            machine.Name, len(volumes),
         )
     }
 
@@ -298,19 +318,25 @@ Reactions fire after the transaction commits. They run asynchronously and cannot
 func (p *MonitoringProvider) Init(ctx provider.Context) error {
     // ...
 
-    ctx.Hooks.RegisterReaction("machine.post_create", p.setupDashboard)
+    ctx.Registry.RegisterReaction(provider.Reaction{
+        Feature:  "machines",
+        Event:    "post_create",
+        Callback: p.setupDashboard,
+    })
 
     return nil
 }
 
 func (p *MonitoringProvider) setupDashboard(
-    ctx context.Context, event provider.HookEvent,
+    ctx context.Context, payload interface{},
 ) {
+    machine, ok := payload.(*Machine)
+    if !ok {
+        return
+    }
     p.logger.Info().
-        Str("machine", event.ResourceName).
+        Str("machine", machine.Name).
         Msg("setting up monitoring dashboard")
-    // Dashboard creation logic here.
-    // Errors are logged but do not affect the original operation.
 }
 ```
 
@@ -411,11 +437,13 @@ The external provider runs as a separate process and implements the infractl pro
 
 ```protobuf
 service ExternalProvider {
-    rpc GetInfo(Empty) returns (ProviderInfo);
+    rpc GetInfo(GetInfoRequest) returns (ProviderInfo);
     rpc Init(InitRequest) returns (InitResponse);
     rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
-    rpc HandleRequest(HTTPRequest) returns (HTTPResponse);
-    rpc HandleHook(HookEvent) returns (HookResponse);
+    rpc GetRoutes(GetRoutesRequest) returns (GetRoutesResponse);
+    rpc HandleHTTP(HTTPRequest) returns (HTTPResponse);
+    rpc GetHookRegistrations(GetHookRegistrationsRequest) returns (HookRegistrationList);
+    rpc HandleSyncHook(HookEvent) returns (HookResult);
 }
 ```
 
@@ -443,11 +471,26 @@ The `examples/inventory/` directory contains a complete, runnable provider imple
 - Registers routes under `/machines` with standard REST verbs
 - Demonstrates both `provider.Provider` and `provider.APIProvider` interface satisfaction via compile-time checks
 
-To run the example:
+To run the example, start the server with a PostgreSQL database:
 
 ```bash
-cd examples/inventory
-go run .
+INFRACTL_DB_DSN="host=localhost user=infractl dbname=infractl sslmode=disable" \
+    go run ./cmd/infractl-server/
 ```
 
-This starts a server with the inventory provider active, serving machine CRUD endpoints on the default port.
+This starts the server with the default profile (which includes the inventory provider), serving machine CRUD endpoints under `/api/v1/machines`.
+
+Test it with curl:
+
+```bash
+# Create a machine
+curl -X POST http://localhost:8080/api/v1/machines \
+  -H "Content-Type: application/json" \
+  -d '{"name":"test-machine","spec":{"data":{"arch":"x86_64","cpus":4}}}'
+
+# List machines
+curl http://localhost:8080/api/v1/machines
+
+# Get a specific machine
+curl http://localhost:8080/api/v1/machines/test-machine
+```

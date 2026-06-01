@@ -35,72 +35,95 @@ The core provides generic resource storage, API scaffolding, auth/tenancy enforc
 
 ## Quick Start
 
-A minimal provider registers a resource type and its API routes:
+A provider defines a resource type and registers HTTP routes:
 
 ```go
 package inventory
 
 import (
-	"github.com/fabiendupont/infractl/provider"
-	"github.com/fabiendupont/infractl/resource"
+    "context"
+
+    "github.com/go-chi/chi/v5"
+    "github.com/rs/zerolog"
+    "gorm.io/gorm"
+
+    "github.com/fabiendupont/infractl/provider"
+    "github.com/fabiendupont/infractl/resource"
 )
 
-const ProviderName = "inventory"
-
-type Provider struct {
-	store *resource.Store
+type InventoryProvider struct {
+    db     *gorm.DB
+    store  resource.Store[Machine]
+    logger zerolog.Logger
 }
 
-func init() {
-	provider.Register(ProviderName, &Provider{})
+func New() *InventoryProvider { return &InventoryProvider{} }
+
+func (p *InventoryProvider) Name() string           { return "inventory" }
+func (p *InventoryProvider) Version() string        { return "0.1.0" }
+func (p *InventoryProvider) Features() []string     { return []string{"inventory"} }
+func (p *InventoryProvider) Dependencies() []string { return nil }
+
+func (p *InventoryProvider) Init(ctx provider.Context) error {
+    p.db = ctx.DB
+    p.logger = ctx.Logger.With().Str("provider", p.Name()).Logger()
+    p.store = resource.NewGenericStore[Machine](ctx.DB)
+    return ctx.DB.AutoMigrate(&Machine{})
 }
 
-func (p *Provider) Init(ctx provider.Context) error {
-	p.store = ctx.NewStore("hosts", HostSpec{}, HostStatus{})
-	ctx.HandleCRUD("/api/v1/hosts", p.store)
-	return nil
+func (p *InventoryProvider) Shutdown(_ context.Context) error { return nil }
+
+func (p *InventoryProvider) RegisterRoutes(r chi.Router) {
+    r.Route("/machines", func(r chi.Router) {
+        r.Get("/", p.listMachines)
+        r.Post("/", p.createMachine)
+        r.Route("/{name}", func(r chi.Router) {
+            r.Get("/", p.getMachine)
+            r.Put("/", p.updateMachine)
+            r.Delete("/", p.deleteMachine)
+        })
+    })
 }
 
-func (p *Provider) Start(ctx provider.Context) error {
-	return nil
-}
-
-func (p *Provider) Stop() error {
-	return nil
-}
-
-type HostSpec struct {
-	Hostname string `json:"hostname"`
-	Address  string `json:"address"`
-}
-
-type HostStatus struct {
-	State string `json:"state"`
-}
+var _ provider.APIProvider = (*InventoryProvider)(nil)
 ```
 
-Import the provider in a profile to include it in a build:
+See `examples/inventory/` for the complete reference implementation including model definition, handler implementations, and OpenAPI spec.
 
-```go
-package main
+## Build / Run / Test
 
-import (
-	_ "github.com/fabiendupont/infractl/examples/inventory"
-	"github.com/fabiendupont/infractl/api"
-)
+```bash
+# Build all packages
+go build ./...
 
-func main() {
-	api.Run()
-}
+# Run unit tests (no external dependencies)
+go test $(go list ./... | grep -v /tests/) -count=1
+
+# Run integration and e2e tests (requires Docker or Podman)
+# With Podman, set DOCKER_HOST and disable Ryuk:
+export DOCKER_HOST=unix:///run/user/1000/podman/podman.sock
+export TESTCONTAINERS_RYUK_DISABLED=true
+go test ./tests/integration/ ./tests/e2e/ -v -count=1
+
+# Start the server (requires PostgreSQL)
+INFRACTL_DB_DSN="host=localhost user=infractl dbname=infractl sslmode=disable" \
+    go run ./cmd/infractl-server/
+
+# Use the CLI
+go run ./cmd/infractl/ machines list
+go run ./cmd/infractl/ capabilities
 ```
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [CLAUDE.md](CLAUDE.md) | Development instructions and conventions |
+| [docs/architecture.md](docs/architecture.md) | Core layers, design decisions, and derivation from source projects |
+| [docs/provider-guide.md](docs/provider-guide.md) | Step-by-step guide to building a provider |
 | [docs/source-projects.md](docs/source-projects.md) | Mapping of framework components to source implementations |
 | [docs/enhancements/](docs/enhancements/) | Design proposals and RFCs |
+| [CLAUDE.md](CLAUDE.md) | Development instructions and conventions |
+| [IMPLEMENTATION.md](IMPLEMENTATION.md) | Implementation progress and task tracking |
 | [examples/inventory/](examples/inventory/) | Reference provider implementation |
 
 ## Source Projects

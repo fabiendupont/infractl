@@ -44,23 +44,27 @@ The composite key is `(OrgID, Name)`, enforcing name uniqueness within a tenant 
 
 `GenericStore[R Resource]` provides typed CRUD operations over any resource that embeds `resource.Resource`:
 
-- **Create** -- inserts with automatic `OrgID` scoping from the request context, sets initial `Generation` and `ResourceVersion`
-- **Get** -- retrieves by `(OrgID, Name)`, returns not-found error for missing or soft-deleted resources
-- **List** -- paginated listing with CEL-inspired filter expressions, cursor-based pagination, and label selectors
-- **Update** -- conditional update using `ResourceVersion` for optimistic concurrency; returns conflict error on version mismatch; increments `Generation` if spec changed
+- **Create** -- inserts with `OrgID` set by the caller, sets initial `Generation` and `ResourceVersion` to 1. Returns `ErrAlreadyExists` on duplicate `(OrgID, Name)`
+- **Get** -- retrieves by `(OrgID, Name)`, returns `ErrNotFound` for missing or soft-deleted resources
+- **List** -- paginated listing with filter expressions, cursor-based pagination, and label selectors
+- **Update** -- conditional update using `ResourceVersion` for optimistic concurrency; returns `ErrConflict` on version mismatch; increments `Generation` if spec changed (detected via `GenerationTracker` interface)
 - **Delete** -- soft delete by setting `DeletedAt`, preserving audit trail
 
 All store operations automatically scope queries to the caller's `OrgID`, making tenant isolation a structural guarantee rather than a per-query concern.
 
 #### Filter Expressions
 
-List operations accept filter strings using a CEL-inspired syntax that the store translates to SQL WHERE clauses:
+List operations accept filter strings that the store translates to parameterized SQL WHERE clauses:
 
 ```
-name = "web-*"                        // Wildcard match
+name = "web-01"                       // Exact match
+name != "temp"                        // Not equal
 labels.env = "production"             // Label selector
-status.state = "ready" AND spec.arch = "arm64"   // Compound
+name = "web-01" AND labels.env = "prod"  // Compound with AND
+name = "a" OR name = "b"             // Compound with OR
 ```
+
+Supported operators: `=`, `!=`, `>`, `<`, `>=`, `<=`. Logical operators: `AND`, `OR`. Label selectors use the `labels.key = value` syntax.
 
 #### Pagination
 
@@ -119,9 +123,7 @@ The auth layer handles identity verification, access control, and tenant scoping
 
 Authentication is pluggable through the `Authenticator` interface. Supported backends:
 
-- **Keycloak OIDC** -- validates JWT tokens against a Keycloak realm, extracts user identity and group memberships
-- **AAP Gateway** -- authenticates against Ansible Automation Platform's gateway service
-- **Kubernetes ServiceAccount** -- validates service account tokens via the TokenReview API
+- **Keycloak OIDC** -- validates JWT tokens against a Keycloak realm, extracts user identity and group memberships, caches JWKS keys with TTL
 - **Guest mode** -- development-only backend that accepts all requests with a configurable default identity
 
 Each authenticator produces a `Subject` that flows through the rest of the request.
@@ -205,20 +207,14 @@ type APIProvider interface {
     RegisterRoutes(r chi.Router)
 }
 
-type WorkflowProvider interface {
-    Provider
-    RegisterWorkflows(registry WorkflowRegistry)
-}
-
 type MigrationProvider interface {
     Provider
-    MigrationSource() MigrationSource
+    MigrationSource() fs.FS
 }
 ```
 
 - **APIProvider** -- contributes HTTP routes to the API server
-- **WorkflowProvider** -- registers async workflows (Temporal, AAP, etc.)
-- **MigrationProvider** -- contributes database migrations
+- **MigrationProvider** -- contributes database migrations (returns an `fs.FS` containing SQL migration files)
 
 #### Registry
 
@@ -252,10 +248,26 @@ Hooks enable cross-provider integration without direct dependencies:
 - **Reaction** -- asynchronous fire-and-forget execution via a callback. Example: a monitoring provider reacts to instance creation by setting up dashboards.
 
 ```go
-type HookRunner interface {
-    FireSync(ctx context.Context, event HookEvent) error
-    FireAsync(ctx context.Context, event HookEvent)
+type HookFirer interface {
+    FireSync(ctx context.Context, feature, event string, payload interface{}) error
+    FireAsync(ctx context.Context, feature, event string, payload interface{})
 }
+```
+
+Hooks are registered on the provider registry by feature and event name:
+
+```go
+registry.RegisterHook(provider.SyncHook{
+    Feature: "machines",
+    Event:   "pre_delete",
+    Handler: func(ctx context.Context, payload interface{}) error { ... },
+})
+
+registry.RegisterReaction(provider.Reaction{
+    Feature:  "machines",
+    Event:    "post_create",
+    Callback: func(ctx context.Context, payload interface{}) { ... },
+})
 ```
 
 Sync hooks run in the caller's transaction; if any hook returns an error, the entire operation rolls back. Reactions are dispatched after the transaction commits.
