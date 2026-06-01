@@ -68,6 +68,13 @@ func (s *InstrumentedStore[R]) Update(ctx context.Context, resource *R) error {
 	return err
 }
 
+func (s *InstrumentedStore[R]) PartialUpdate(ctx context.Context, orgID uuid.UUID, name string, resourceVersion int64, fields map[string]interface{}) error {
+	start := time.Now()
+	err := s.inner.PartialUpdate(ctx, orgID, name, resourceVersion, fields)
+	s.record("partial_update", start, err)
+	return err
+}
+
 func (s *InstrumentedStore[R]) Delete(ctx context.Context, orgID uuid.UUID, name string) error {
 	start := time.Now()
 	err := s.inner.Delete(ctx, orgID, name)

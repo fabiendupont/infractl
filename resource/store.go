@@ -74,6 +74,7 @@ type Store[R any] interface {
 	Get(ctx context.Context, orgID uuid.UUID, name string) (*R, error)
 	List(ctx context.Context, orgID uuid.UUID, opts ListOptions) (*List[R], error)
 	Update(ctx context.Context, resource *R) error
+	PartialUpdate(ctx context.Context, orgID uuid.UUID, name string, resourceVersion int64, fields map[string]interface{}) error
 	Delete(ctx context.Context, orgID uuid.UUID, name string) error
 }
 
@@ -247,6 +248,34 @@ func MarshalSpec(v any) ([]byte, error) {
 // isDuplicateKeyError checks whether the error is a PostgreSQL unique violation
 // (SQLSTATE 23505). GORM's ErrDuplicatedKey is not reliably returned by the
 // pgx driver, so we inspect the underlying pgconn.PgError directly.
+// PartialUpdate updates only the specified fields on a resource, using
+// optimistic concurrency via ResourceVersion. The resource_version field
+// is always incremented. Returns ErrConflict if the provided version
+// doesn't match the DB, ErrNotFound if the resource doesn't exist.
+func (s *GenericStore[R]) PartialUpdate(ctx context.Context, orgID uuid.UUID, name string, resourceVersion int64, fields map[string]interface{}) error {
+	fields["resource_version"] = resourceVersion + 1
+	fields["updated_at"] = time.Now()
+
+	result := s.db.WithContext(ctx).
+		Model(new(R)).
+		Where("org_id = ? AND name = ? AND resource_version = ?", orgID, name, resourceVersion).
+		Updates(fields)
+	if result.Error != nil {
+		return fmt.Errorf("partial updating resource: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		var count int64
+		s.db.WithContext(ctx).Model(new(R)).
+			Where("org_id = ? AND name = ?", orgID, name).
+			Count(&count)
+		if count == 0 {
+			return ErrNotFound
+		}
+		return ErrConflict
+	}
+	return nil
+}
+
 func isDuplicateKeyError(err error) bool {
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
 		return true

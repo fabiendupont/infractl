@@ -19,6 +19,7 @@ func (m *mockStore) List(_ context.Context, _ uuid.UUID, _ ListOptions) (*List[s
 	return &List[struct{}]{}, nil
 }
 func (m *mockStore) Update(_ context.Context, _ *struct{}) error                      { return nil }
+func (m *mockStore) PartialUpdate(_ context.Context, _ uuid.UUID, _ string, _ int64, _ map[string]interface{}) error { return nil }
 func (m *mockStore) Delete(_ context.Context, _ uuid.UUID, _ string) error            { return nil }
 
 func TestInstrumentedStoreRecordsMetrics(t *testing.T) {
