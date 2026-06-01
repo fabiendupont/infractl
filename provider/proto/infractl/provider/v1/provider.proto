@@ -1,0 +1,96 @@
+// Copyright 2025 Fabien Dupont
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package infractl.provider.v1;
+
+option go_package = "github.com/fabiendupont/infractl/provider/proto/infractl/provider/v1;providerv1";
+
+service ExternalProvider {
+    rpc GetInfo(GetInfoRequest) returns (ProviderInfo);
+    rpc Init(InitRequest) returns (InitResponse);
+    rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+    rpc GetRoutes(GetRoutesRequest) returns (GetRoutesResponse);
+    rpc HandleHTTP(HTTPRequest) returns (HTTPResponse);
+    rpc GetHookRegistrations(GetHookRegistrationsRequest) returns (HookRegistrationList);
+    rpc HandleSyncHook(HookEvent) returns (HookResult);
+}
+
+message GetInfoRequest {}
+
+message ProviderInfo {
+    string name = 1;
+    string version = 2;
+    repeated string features = 3;
+    repeated string dependencies = 4;
+}
+
+message InitRequest {
+    string api_prefix = 1;
+    map<string, string> config = 2;
+}
+
+message InitResponse {}
+
+message ShutdownRequest {}
+message ShutdownResponse {}
+
+message GetRoutesRequest {}
+
+message Route {
+    string method = 1;
+    string path = 2;
+}
+
+message GetRoutesResponse {
+    repeated Route routes = 1;
+}
+
+message HTTPRequest {
+    string method = 1;
+    string path = 2;
+    map<string, string> headers = 3;
+    bytes body = 4;
+    string query = 5;
+}
+
+message HTTPResponse {
+    int32 status_code = 1;
+    map<string, string> headers = 2;
+    bytes body = 3;
+}
+
+message GetHookRegistrationsRequest {}
+
+message HookRegistration {
+    string feature = 1;
+    string event = 2;
+    bool sync = 3;
+}
+
+message HookRegistrationList {
+    repeated HookRegistration registrations = 1;
+}
+
+message HookEvent {
+    string feature = 1;
+    string event = 2;
+    bytes payload = 3;
+}
+
+message HookResult {
+    bool success = 1;
+    string error = 2;
+}

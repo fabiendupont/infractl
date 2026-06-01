@@ -1,6 +1,6 @@
 # Compiled binaries
-infractl
-infractl-server
+/infractl
+/infractl-server
 *.exe
 
 # IDE and editor files
