@@ -157,6 +157,18 @@ func (r *Registry) APIProviders() []APIProvider {
 	return result
 }
 
+// GRPCProviders returns all registered providers that implement
+// GRPCProvider, in dependency-resolved order.
+func (r *Registry) GRPCProviders() []GRPCProvider {
+	var result []GRPCProvider
+	for _, name := range r.order {
+		if gp, ok := r.providers[name].(GRPCProvider); ok {
+			result = append(result, gp)
+		}
+	}
+	return result
+}
+
 // MigrationProviders returns all registered providers that implement
 // MigrationProvider, in dependency-resolved order.
 func (r *Registry) MigrationProviders() []MigrationProvider {

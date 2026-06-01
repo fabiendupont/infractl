@@ -15,6 +15,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 )
 
@@ -22,6 +23,12 @@ import (
 // Implementations may inspect headers, cookies, or tokens.
 type Authenticator interface {
 	Authenticate(r *http.Request) (*Subject, error)
+}
+
+// ContextAuthenticator extracts an authenticated Subject from a context.
+// Used by gRPC interceptors where no *http.Request is available.
+type ContextAuthenticator interface {
+	AuthenticateContext(ctx context.Context) (*Subject, error)
 }
 
 // GuestAuthenticator always returns a fixed guest subject. Use this for
@@ -38,7 +45,12 @@ type GuestAuthenticator struct {
 }
 
 // Authenticate returns a guest Subject regardless of request content.
-func (g *GuestAuthenticator) Authenticate(_ *http.Request) (*Subject, error) {
+func (g *GuestAuthenticator) Authenticate(_ *http.Request) (*Subject, error) { return g.guest() }
+
+// AuthenticateContext returns a guest Subject regardless of context content.
+func (g *GuestAuthenticator) AuthenticateContext(_ context.Context) (*Subject, error) { return g.guest() }
+
+func (g *GuestAuthenticator) guest() (*Subject, error) {
 	user := g.GuestUser
 	if user == "" {
 		user = "guest"

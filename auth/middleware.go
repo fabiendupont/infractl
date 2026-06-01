@@ -46,6 +46,11 @@ func ContextWithSubject(ctx context.Context, sub *Subject) context.Context {
 	return context.WithValue(ctx, subjectContextKey, sub)
 }
 
+// ContextWithOrgID stores a resolved organization (tenant) UUID in the context.
+func ContextWithOrgID(ctx context.Context, orgID uuid.UUID) context.Context {
+	return context.WithValue(ctx, orgIDContextKey, orgID)
+}
+
 // OrgIDFromContext extracts the resolved organization (tenant) UUID stored
 // by the Tenancy middleware. Returns an error if no org ID is present.
 func OrgIDFromContext(ctx context.Context) (uuid.UUID, error) {
@@ -103,7 +108,7 @@ func Tenancy(logic TenancyLogic) func(http.Handler) http.Handler {
 				orgID = parsed
 			}
 
-			ctx := context.WithValue(r.Context(), orgIDContextKey, orgID)
+			ctx := ContextWithOrgID(r.Context(), orgID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

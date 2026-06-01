@@ -19,6 +19,7 @@ import (
 	"io/fs"
 
 	"github.com/go-chi/chi/v5"
+	"google.golang.org/grpc"
 )
 
 // Provider is the contract every infractl provider implements.
@@ -38,6 +39,13 @@ type Provider interface {
 type APIProvider interface {
 	Provider
 	RegisterRoutes(r chi.Router)
+}
+
+// GRPCProvider registers gRPC services with the server. Providers that
+// serve gRPC endpoints implement this interface in addition to Provider.
+type GRPCProvider interface {
+	Provider
+	RegisterServices(s *grpc.Server)
 }
 
 // MigrationProvider manages its own DB tables. The returned fs.FS must
