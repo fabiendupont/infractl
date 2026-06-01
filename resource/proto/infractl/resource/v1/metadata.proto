@@ -1,0 +1,42 @@
+// Copyright 2025 The infractl Authors
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package infractl.resource.v1;
+
+option go_package = "github.com/fabiendupont/infractl/resource/proto/infractl/resource/v1;resourcev1";
+
+import "google/protobuf/timestamp.proto";
+
+// Metadata is the shared metadata for all infractl resources.
+// It matches the fields in resource.Resource.
+message Metadata {
+    string org_id = 1;
+    string name = 2;
+    map<string, string> labels = 3;
+    map<string, string> annotations = 4;
+    repeated string finalizers = 5;
+    int64 generation = 6;
+    int64 resource_version = 7;
+    string owner = 8;
+    string creator = 9;
+    google.protobuf.Timestamp created_at = 10;
+    google.protobuf.Timestamp updated_at = 11;
+    google.protobuf.Timestamp deletion_timestamp = 12;
+}
+
+// ListRequest is the common request shape for list operations.
+message ListRequest {
+    string org_id = 1;
+    int32 limit = 2;
+    string continue = 3;
+    string filter = 4;
+    string sort = 5;
+}
+
+// ListResponse is the common response wrapper for paginated lists.
+message ListResponseMeta {
+    string continue = 1;
+    int64 total = 2;
+}
