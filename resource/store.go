@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -36,6 +37,11 @@ var (
 	// ErrConflict is returned when an Update fails optimistic concurrency
 	// checks (the ResourceVersion in the request doesn't match the DB).
 	ErrConflict = errors.New("resource version conflict")
+
+	// ErrFinalizersPending is returned when a Delete is attempted on a
+	// resource that still has finalizers. The resource's DeletionTimestamp
+	// is set but the actual soft-delete is deferred.
+	ErrFinalizersPending = errors.New("resource has pending finalizers")
 )
 
 // ListOptions controls pagination, filtering, and sorting for List operations.
@@ -252,9 +258,33 @@ func isDuplicateKeyError(err error) bool {
 	return false
 }
 
-// Delete soft-deletes a resource by org and name. Returns ErrNotFound if the
+// Delete soft-deletes a resource by org and name. If the resource has
+// finalizers, DeletionTimestamp is set but the soft-delete is deferred
+// and ErrFinalizersPending is returned. Returns ErrNotFound if the
 // resource does not exist.
 func (s *GenericStore[R]) Delete(ctx context.Context, orgID uuid.UUID, name string) error {
+	var existing R
+	if err := s.db.WithContext(ctx).
+		Where("org_id = ? AND name = ?", orgID, name).
+		First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("fetching resource for delete: %w", err)
+	}
+
+	if fa, ok := any(&existing).(FinalizerAccessor); ok && len(fa.GetFinalizers()) > 0 {
+		now := time.Now()
+		fa.SetDeletionTimestamp(&now)
+		if err := s.db.WithContext(ctx).
+			Where("org_id = ? AND name = ?", orgID, name).
+			Select("deletion_timestamp").
+			Updates(&existing).Error; err != nil {
+			return fmt.Errorf("setting deletion timestamp: %w", err)
+		}
+		return ErrFinalizersPending
+	}
+
 	result := s.db.WithContext(ctx).
 		Where("org_id = ? AND name = ?", orgID, name).
 		Delete(new(R))

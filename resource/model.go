@@ -42,20 +42,31 @@ type GenerationTracker interface {
 	SpecBytes() ([]byte, error)
 }
 
+// FinalizerAccessor provides access to finalizer and deletion state.
+// The Resource struct satisfies this interface.
+type FinalizerAccessor interface {
+	GetFinalizers() []string
+	GetDeletionTimestamp() *time.Time
+	SetDeletionTimestamp(t *time.Time)
+}
+
 // Resource is the base model embedded by all domain resources. It provides
 // multi-tenant scoping via OrgID, optimistic concurrency via Generation and
 // ResourceVersion, and soft-delete support via DeletedAt.
 type Resource struct {
-	OrgID           uuid.UUID      `gorm:"primaryKey;type:uuid" json:"org_id"`
-	Name            string         `gorm:"primaryKey" json:"name"`
-	Labels          JSONMap        `gorm:"type:jsonb" json:"labels,omitempty"`
-	Annotations     JSONMap        `gorm:"type:jsonb" json:"annotations,omitempty"`
-	Generation      int64          `json:"generation"`
-	ResourceVersion int64          `json:"resource_version"`
-	Owner           *string        `json:"owner,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
+	OrgID             uuid.UUID      `gorm:"primaryKey;type:uuid" json:"org_id"`
+	Name              string         `gorm:"primaryKey" json:"name"`
+	Labels            JSONMap        `gorm:"type:jsonb" json:"labels,omitempty"`
+	Annotations       JSONMap        `gorm:"type:jsonb" json:"annotations,omitempty"`
+	Finalizers        JSONArray      `gorm:"type:jsonb" json:"finalizers,omitempty"`
+	Generation        int64          `json:"generation"`
+	ResourceVersion   int64          `json:"resource_version"`
+	Owner             *string        `json:"owner,omitempty"`
+	Creator           string         `json:"creator,omitempty"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	DeletionTimestamp *time.Time     `json:"deletion_timestamp,omitempty"`
+	DeletedAt         gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 }
 
 // BeforeCreate bumps Generation and ResourceVersion on initial insert.
@@ -81,6 +92,37 @@ func (r *Resource) GetResourceVersion() int64   { return r.ResourceVersion }
 func (r *Resource) SetResourceVersion(v int64)  { r.ResourceVersion = v }
 func (r *Resource) GetGeneration() int64        { return r.Generation }
 func (r *Resource) SetGeneration(v int64)       { r.Generation = v }
+
+func (r *Resource) GetFinalizers() []string         { return r.Finalizers }
+func (r *Resource) GetDeletionTimestamp() *time.Time { return r.DeletionTimestamp }
+func (r *Resource) SetDeletionTimestamp(t *time.Time) { r.DeletionTimestamp = t }
+
+// HasFinalizer returns true if the resource has the named finalizer.
+func (r *Resource) HasFinalizer(name string) bool {
+	for _, f := range r.Finalizers {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
+
+// AddFinalizer adds a finalizer if not already present.
+func (r *Resource) AddFinalizer(name string) {
+	if !r.HasFinalizer(name) {
+		r.Finalizers = append(r.Finalizers, name)
+	}
+}
+
+// RemoveFinalizer removes a finalizer by name.
+func (r *Resource) RemoveFinalizer(name string) {
+	for i, f := range r.Finalizers {
+		if f == name {
+			r.Finalizers = append(r.Finalizers[:i], r.Finalizers[i+1:]...)
+			return
+		}
+	}
+}
 
 // JSONMap stores a string-to-string map as PostgreSQL JSONB.
 type JSONMap map[string]string
@@ -113,6 +155,39 @@ func (m *JSONMap) Scan(src interface{}) error {
 		return fmt.Errorf("JSONMap.Scan: unsupported type %T", src)
 	}
 	return json.Unmarshal(data, m)
+}
+
+// JSONArray stores a string slice as PostgreSQL JSONB.
+type JSONArray []string
+
+// Value implements driver.Valuer for GORM/database serialization.
+func (a JSONArray) Value() (driver.Value, error) {
+	if a == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(a)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling JSONArray: %w", err)
+	}
+	return b, nil
+}
+
+// Scan implements sql.Scanner for GORM/database deserialization.
+func (a *JSONArray) Scan(src interface{}) error {
+	if src == nil {
+		*a = nil
+		return nil
+	}
+	var data []byte
+	switch v := src.(type) {
+	case []byte:
+		data = v
+	case string:
+		data = []byte(v)
+	default:
+		return fmt.Errorf("JSONArray.Scan: unsupported type %T", src)
+	}
+	return json.Unmarshal(data, a)
 }
 
 // JSONField wraps an arbitrary struct so it can be stored as PostgreSQL JSONB.
