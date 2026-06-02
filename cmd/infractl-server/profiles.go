@@ -6,8 +6,11 @@ package main
 import (
 	"github.com/fabiendupont/infractl/examples/inventory"
 	"github.com/fabiendupont/infractl/platform/event"
+	"github.com/fabiendupont/infractl/platform/policy"
 	"github.com/fabiendupont/infractl/platform/secret"
+	"github.com/fabiendupont/infractl/platform/task"
 	"github.com/fabiendupont/infractl/platform/tenant"
+	"github.com/fabiendupont/infractl/platform/webhook"
 	"github.com/fabiendupont/infractl/provider"
 )
 
@@ -16,6 +19,9 @@ func init() {
 		func() provider.Provider { return tenant.New() },
 		func() provider.Provider { return event.New() },
 		func() provider.Provider { return secret.New() },
+		func() provider.Provider { return task.New() },
+		func() provider.Provider { return webhook.New() },
+		func() provider.Provider { return policy.New() },
 		func() provider.Provider { return inventory.New() },
 	})
 }
