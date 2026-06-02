@@ -207,13 +207,25 @@ type APIProvider interface {
     RegisterRoutes(r chi.Router)
 }
 
+type GRPCProvider interface {
+    Provider
+    RegisterServices(s *grpc.Server)
+}
+
+type WorkflowProvider interface {
+    Provider
+    RegisterWorkflows(registry interface{})
+}
+
 type MigrationProvider interface {
     Provider
     MigrationSource() fs.FS
 }
 ```
 
-- **APIProvider** -- contributes HTTP routes to the API server
+- **APIProvider** -- contributes HTTP routes to the chi REST API server
+- **GRPCProvider** -- contributes gRPC services to the gRPC server
+- **WorkflowProvider** -- registers async workflows with a workflow engine (Temporal, AAP, in-process, or other). The registry type is intentionally `interface{}` to avoid coupling infractl to a specific engine.
 - **MigrationProvider** -- contributes database migrations (returns an `fs.FS` containing SQL migration files)
 
 #### Registry

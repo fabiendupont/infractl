@@ -48,6 +48,15 @@ type GRPCProvider interface {
 	RegisterServices(s *grpc.Server)
 }
 
+// WorkflowProvider registers async workflows with a workflow engine.
+// The engine is provider-defined — Temporal, AAP, in-process, or other.
+// The registry type is intentionally interface{} to avoid coupling
+// infractl to a specific workflow engine.
+type WorkflowProvider interface {
+	Provider
+	RegisterWorkflows(registry interface{})
+}
+
 // MigrationProvider manages its own DB tables. The returned fs.FS must
 // contain SQL migration files that the core migration runner applies.
 type MigrationProvider interface {
