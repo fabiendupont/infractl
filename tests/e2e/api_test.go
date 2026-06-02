@@ -566,7 +566,7 @@ func TestCreateSecret(t *testing.T) {
 	assert.Equal(t, "test-secret", result["name"])
 
 	spec := result["spec"].(map[string]interface{})
-	data := spec["data"].(map[string]interface{})
+	data := spec["Data"].(map[string]interface{})
 	secretData := data["data"].(map[string]interface{})
 	assert.Equal(t, "***", secretData["username"])
 	assert.Equal(t, "***", secretData["password"])
@@ -602,7 +602,7 @@ func TestGetSecretRedacted(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &result))
 
 	spec := result["spec"].(map[string]interface{})
-	data := spec["data"].(map[string]interface{})
+	data := spec["Data"].(map[string]interface{})
 	secretData := data["data"].(map[string]interface{})
 	assert.Equal(t, "***", secretData["api_key"])
 }
@@ -637,7 +637,7 @@ func TestRevealSecret(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &result))
 
 	spec := result["spec"].(map[string]interface{})
-	data := spec["data"].(map[string]interface{})
+	data := spec["Data"].(map[string]interface{})
 	secretData := data["data"].(map[string]interface{})
 	assert.Equal(t, "abc123", secretData["api_key"])
 }
