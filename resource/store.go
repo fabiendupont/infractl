@@ -348,7 +348,7 @@ func (s *GenericStore[R]) validateParent(ctx context.Context, res *R) error {
 	if !ok {
 		return nil
 	}
-	parent := accessor.(*Resource).GetParent()
+	parent := accessor.GetParent()
 	if parent == nil || *parent == "" {
 		return nil
 	}

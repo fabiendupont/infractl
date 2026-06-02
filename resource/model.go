@@ -29,6 +29,7 @@ import (
 type ResourceAccessor interface {
 	GetOrgID() uuid.UUID
 	GetName() string
+	GetParent() *string
 	GetResourceVersion() int64
 	SetResourceVersion(int64)
 	GetGeneration() int64
