@@ -19,6 +19,12 @@ import (
 	"github.com/fabiendupont/infractl/api"
 	"github.com/fabiendupont/infractl/auth"
 	"github.com/fabiendupont/infractl/examples/inventory"
+	"github.com/fabiendupont/infractl/platform/event"
+	"github.com/fabiendupont/infractl/platform/policy"
+	"github.com/fabiendupont/infractl/platform/secret"
+	"github.com/fabiendupont/infractl/platform/task"
+	"github.com/fabiendupont/infractl/platform/tenant"
+	"github.com/fabiendupont/infractl/platform/webhook"
 	"github.com/fabiendupont/infractl/provider"
 	"github.com/fabiendupont/infractl/tests/testutil"
 )
@@ -41,6 +47,12 @@ func setupTestServer(t *testing.T) (string, func()) {
 
 	reg := provider.NewRegistry()
 	require.NoError(t, reg.Register(inventory.New()))
+	require.NoError(t, reg.Register(tenant.New()))
+	require.NoError(t, reg.Register(event.New()))
+	require.NoError(t, reg.Register(secret.New()))
+	require.NoError(t, reg.Register(task.New()))
+	require.NoError(t, reg.Register(webhook.New()))
+	require.NoError(t, reg.Register(policy.New()))
 	require.NoError(t, reg.ResolveDependencies())
 
 	hooks := provider.NewHookRunner(reg, logger)
@@ -413,4 +425,475 @@ func TestForbiddenOrgID(t *testing.T) {
 	readBody(t, resp)
 
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+// --- Tenant provider tests ---
+
+func TestCreateTenant(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	payload := map[string]interface{}{
+		"name": "test-tenant",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"display_name": "Test Tenant",
+				"description":  "A test tenant",
+			},
+		},
+	}
+
+	resp := doRequest(t, http.MethodPost, baseURL+"/api/v1/tenants", payload, nil)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.Equal(t, "test-tenant", result["name"])
+}
+
+func TestGetTenant(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	payload := map[string]interface{}{
+		"name": "test-tenant",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"display_name": "Test Tenant",
+			},
+		},
+	}
+	createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/tenants", payload, nil)
+	readBody(t, createResp)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/v1/tenants/test-tenant", nil, nil)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.Equal(t, "test-tenant", result["name"])
+}
+
+func TestListTenants(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	for _, name := range []string{"tenant-a", "tenant-b"} {
+		payload := map[string]interface{}{
+			"name": name,
+			"spec": map[string]interface{}{
+				"data": map[string]interface{}{
+					"display_name": name,
+				},
+			},
+		}
+		createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/tenants", payload, nil)
+		readBody(t, createResp)
+		require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	}
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/v1/tenants", nil, nil)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	items, ok := result["items"].([]interface{})
+	require.True(t, ok)
+	assert.Len(t, items, 2)
+}
+
+func TestDeleteTenant(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	payload := map[string]interface{}{
+		"name": "test-tenant",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"display_name": "Test Tenant",
+			},
+		},
+	}
+	createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/tenants", payload, nil)
+	readBody(t, createResp)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	resp := doRequest(t, http.MethodDelete, baseURL+"/api/v1/tenants/test-tenant", nil, nil)
+	readBody(t, resp)
+
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	getResp := doRequest(t, http.MethodGet, baseURL+"/api/v1/tenants/test-tenant", nil, nil)
+	readBody(t, getResp)
+	assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
+}
+
+// --- Secret provider tests ---
+
+func TestCreateSecret(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-secret",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"type": "opaque",
+				"data": map[string]interface{}{
+					"username": "admin",
+					"password": "s3cret",
+				},
+			},
+		},
+	}
+
+	resp := doRequest(t, http.MethodPost, baseURL+"/api/v1/secrets", payload, headers)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.Equal(t, "test-secret", result["name"])
+
+	spec := result["spec"].(map[string]interface{})
+	data := spec["data"].(map[string]interface{})
+	secretData := data["data"].(map[string]interface{})
+	assert.Equal(t, "***", secretData["username"])
+	assert.Equal(t, "***", secretData["password"])
+}
+
+func TestGetSecretRedacted(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-secret",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"type": "opaque",
+				"data": map[string]interface{}{
+					"api_key": "abc123",
+				},
+			},
+		},
+	}
+	createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/secrets", payload, headers)
+	readBody(t, createResp)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/v1/secrets/test-secret", nil, headers)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+
+	spec := result["spec"].(map[string]interface{})
+	data := spec["data"].(map[string]interface{})
+	secretData := data["data"].(map[string]interface{})
+	assert.Equal(t, "***", secretData["api_key"])
+}
+
+func TestRevealSecret(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-secret",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"type": "opaque",
+				"data": map[string]interface{}{
+					"api_key": "abc123",
+				},
+			},
+		},
+	}
+	createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/secrets", payload, headers)
+	readBody(t, createResp)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/v1/secrets/test-secret/reveal", nil, headers)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+
+	spec := result["spec"].(map[string]interface{})
+	data := spec["data"].(map[string]interface{})
+	secretData := data["data"].(map[string]interface{})
+	assert.Equal(t, "abc123", secretData["api_key"])
+}
+
+func TestDeleteSecret(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-secret",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"type": "opaque",
+				"data": map[string]interface{}{
+					"key": "value",
+				},
+			},
+		},
+	}
+	createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/secrets", payload, headers)
+	readBody(t, createResp)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	resp := doRequest(t, http.MethodDelete, baseURL+"/api/v1/secrets/test-secret", nil, headers)
+	readBody(t, resp)
+
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	getResp := doRequest(t, http.MethodGet, baseURL+"/api/v1/secrets/test-secret", nil, headers)
+	readBody(t, getResp)
+	assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
+}
+
+// --- Policy provider tests ---
+
+func TestCreatePolicy(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-policy",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"description": "Allow all machines",
+				"rules": []map[string]interface{}{
+					{
+						"subjects":  []string{"*"},
+						"resources": []string{"machines"},
+						"actions":   []string{"get", "list", "create"},
+						"effect":    "allow",
+					},
+				},
+			},
+		},
+	}
+
+	resp := doRequest(t, http.MethodPost, baseURL+"/api/v1/policies", payload, headers)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.Equal(t, "test-policy", result["name"])
+}
+
+func TestGetPolicy(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-policy",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"description": "Allow all",
+				"rules": []map[string]interface{}{
+					{
+						"subjects":  []string{"*"},
+						"resources": []string{"*"},
+						"actions":   []string{"*"},
+						"effect":    "allow",
+					},
+				},
+			},
+		},
+	}
+	createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/policies", payload, headers)
+	readBody(t, createResp)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/v1/policies/test-policy", nil, headers)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.Equal(t, "test-policy", result["name"])
+}
+
+func TestDeletePolicy(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-policy",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"description": "Temp policy",
+				"rules":       []map[string]interface{}{},
+			},
+		},
+	}
+	createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/policies", payload, headers)
+	readBody(t, createResp)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	resp := doRequest(t, http.MethodDelete, baseURL+"/api/v1/policies/test-policy", nil, headers)
+	readBody(t, resp)
+
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	getResp := doRequest(t, http.MethodGet, baseURL+"/api/v1/policies/test-policy", nil, headers)
+	readBody(t, getResp)
+	assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
+}
+
+// --- Event provider tests ---
+
+func TestListEvents(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/v1/events", nil, headers)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.NotNil(t, result["items"])
+}
+
+// --- Task provider tests ---
+
+func TestListTasks(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/v1/tasks", nil, headers)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.NotNil(t, result["items"])
+}
+
+// --- Webhook provider tests ---
+
+func TestCreateWebhook(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-webhook",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"url":    "https://example.com/hook",
+				"events": []string{"created", "updated"},
+				"active": true,
+			},
+		},
+	}
+
+	resp := doRequest(t, http.MethodPost, baseURL+"/api/v1/webhooks", payload, headers)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.Equal(t, "test-webhook", result["name"])
+}
+
+func TestGetWebhook(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-webhook",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"url":    "https://example.com/hook",
+				"events": []string{"created"},
+				"active": true,
+			},
+		},
+	}
+	createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/webhooks", payload, headers)
+	readBody(t, createResp)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	resp := doRequest(t, http.MethodGet, baseURL+"/api/v1/webhooks/test-webhook", nil, headers)
+	body := readBody(t, resp)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(body))
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.Equal(t, "test-webhook", result["name"])
+}
+
+func TestDeleteWebhook(t *testing.T) {
+	baseURL, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	headers := map[string]string{"X-Org-ID": defaultTenant}
+
+	payload := map[string]interface{}{
+		"name": "test-webhook",
+		"spec": map[string]interface{}{
+			"data": map[string]interface{}{
+				"url":    "https://example.com/hook",
+				"events": []string{"created"},
+				"active": true,
+			},
+		},
+	}
+	createResp := doRequest(t, http.MethodPost, baseURL+"/api/v1/webhooks", payload, headers)
+	readBody(t, createResp)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	resp := doRequest(t, http.MethodDelete, baseURL+"/api/v1/webhooks/test-webhook", nil, headers)
+	readBody(t, resp)
+
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	getResp := doRequest(t, http.MethodGet, baseURL+"/api/v1/webhooks/test-webhook", nil, headers)
+	readBody(t, getResp)
+	assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
 }
