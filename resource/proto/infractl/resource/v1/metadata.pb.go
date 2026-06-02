@@ -31,6 +31,7 @@ type Metadata struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	OrgId             string                 `protobuf:"bytes,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
 	Name              string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Parent            *string                `protobuf:"bytes,13,opt,name=parent,proto3,oneof" json:"parent,omitempty"`
 	Labels            map[string]string      `protobuf:"bytes,3,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Annotations       map[string]string      `protobuf:"bytes,4,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Finalizers        []string               `protobuf:"bytes,5,rep,name=finalizers,proto3" json:"finalizers,omitempty"`
@@ -85,6 +86,13 @@ func (x *Metadata) GetOrgId() string {
 func (x *Metadata) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *Metadata) GetParent() string {
+	if x != nil && x.Parent != nil {
+		return *x.Parent
 	}
 	return ""
 }
@@ -293,10 +301,11 @@ var File_infractl_resource_v1_metadata_proto protoreflect.FileDescriptor
 
 const file_infractl_resource_v1_metadata_proto_rawDesc = "" +
 	"\n" +
-	"#infractl/resource/v1/metadata.proto\x12\x14infractl.resource.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa3\x05\n" +
+	"#infractl/resource/v1/metadata.proto\x12\x14infractl.resource.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcb\x05\n" +
 	"\bMetadata\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12B\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
+	"\x06parent\x18\r \x01(\tH\x00R\x06parent\x88\x01\x01\x12B\n" +
 	"\x06labels\x18\x03 \x03(\v2*.infractl.resource.v1.Metadata.LabelsEntryR\x06labels\x12Q\n" +
 	"\vannotations\x18\x04 \x03(\v2/.infractl.resource.v1.Metadata.AnnotationsEntryR\vannotations\x12\x1e\n" +
 	"\n" +
@@ -319,7 +328,8 @@ const file_infractl_resource_v1_metadata_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x82\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\t\n" +
+	"\a_parent\"\x82\x01\n" +
 	"\vListRequest\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x1a\n" +
@@ -369,6 +379,7 @@ func file_infractl_resource_v1_metadata_proto_init() {
 	if File_infractl_resource_v1_metadata_proto != nil {
 		return
 	}
+	file_infractl_resource_v1_metadata_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

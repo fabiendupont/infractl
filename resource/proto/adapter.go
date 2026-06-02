@@ -30,6 +30,9 @@ func MetadataToProto(r *resource.Resource) *resourcev1.Metadata {
 		UpdatedAt:       timestamppb.New(r.UpdatedAt),
 	}
 
+	if r.Parent != nil {
+		m.Parent = r.Parent
+	}
 	if r.Owner != nil {
 		m.Owner = *r.Owner
 	}
@@ -66,6 +69,9 @@ func MetadataFromProto(m *resourcev1.Metadata) resource.Resource {
 		r.OrgID = id
 	}
 
+	if m.Parent != nil {
+		r.Parent = m.Parent
+	}
 	if m.GetOwner() != "" {
 		owner := m.GetOwner()
 		r.Owner = &owner

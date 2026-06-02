@@ -56,6 +56,7 @@ type FinalizerAccessor interface {
 type Resource struct {
 	OrgID             uuid.UUID      `gorm:"primaryKey;type:uuid" json:"org_id"`
 	Name              string         `gorm:"primaryKey" json:"name"`
+	Parent            *string        `gorm:"index" json:"parent,omitempty"`
 	Labels            JSONMap        `gorm:"type:jsonb" json:"labels,omitempty"`
 	Annotations       JSONMap        `gorm:"type:jsonb" json:"annotations,omitempty"`
 	Finalizers        JSONArray      `gorm:"type:jsonb" json:"finalizers,omitempty"`
@@ -93,9 +94,11 @@ func (r *Resource) SetResourceVersion(v int64)  { r.ResourceVersion = v }
 func (r *Resource) GetGeneration() int64        { return r.Generation }
 func (r *Resource) SetGeneration(v int64)       { r.Generation = v }
 
-func (r *Resource) GetFinalizers() []string         { return r.Finalizers }
-func (r *Resource) GetDeletionTimestamp() *time.Time { return r.DeletionTimestamp }
-func (r *Resource) SetDeletionTimestamp(t *time.Time) { r.DeletionTimestamp = t }
+func (r *Resource) GetParent() *string               { return r.Parent }
+func (r *Resource) SetParent(p *string)               { r.Parent = p }
+func (r *Resource) GetFinalizers() []string            { return r.Finalizers }
+func (r *Resource) GetDeletionTimestamp() *time.Time   { return r.DeletionTimestamp }
+func (r *Resource) SetDeletionTimestamp(t *time.Time)  { r.DeletionTimestamp = t }
 
 // HasFinalizer returns true if the resource has the named finalizer.
 func (r *Resource) HasFinalizer(name string) bool {

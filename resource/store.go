@@ -90,8 +90,13 @@ func NewGenericStore[R any](db *gorm.DB) *GenericStore[R] {
 }
 
 // Create inserts a new resource. Returns ErrAlreadyExists if the composite
-// primary key (org_id, name) already exists.
+// primary key (org_id, name) already exists. If the resource has a parent
+// field set, validates that the parent exists and no cycle would be created.
 func (s *GenericStore[R]) Create(ctx context.Context, resource *R) error {
+	if err := s.validateParent(ctx, resource); err != nil {
+		return err
+	}
+
 	result := s.db.WithContext(ctx).Create(resource)
 	if result.Error != nil {
 		if isDuplicateKeyError(result.Error) {
@@ -188,6 +193,10 @@ func (s *GenericStore[R]) List(ctx context.Context, orgID uuid.UUID, opts ListOp
 // ErrConflict is returned. Generation is incremented when the spec changes
 // (if the resource implements GenerationTracker).
 func (s *GenericStore[R]) Update(ctx context.Context, res *R) error {
+	if err := s.validateParent(ctx, res); err != nil {
+		return err
+	}
+
 	accessor, ok := any(res).(ResourceAccessor)
 	if !ok {
 		result := s.db.WithContext(ctx).Save(res)
@@ -302,6 +311,14 @@ func (s *GenericStore[R]) Delete(ctx context.Context, orgID uuid.UUID, name stri
 		return fmt.Errorf("fetching resource for delete: %w", err)
 	}
 
+	hasChildren, err := HasChildren(ctx, s.db, orgID, name, new(R))
+	if err != nil {
+		return fmt.Errorf("checking children: %w", err)
+	}
+	if hasChildren {
+		return ErrHasChildren
+	}
+
 	if fa, ok := any(&existing).(FinalizerAccessor); ok && len(fa.GetFinalizers()) > 0 {
 		now := time.Now()
 		fa.SetDeletionTimestamp(&now)
@@ -324,4 +341,16 @@ func (s *GenericStore[R]) Delete(ctx context.Context, orgID uuid.UUID, name stri
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *GenericStore[R]) validateParent(ctx context.Context, res *R) error {
+	accessor, ok := any(res).(ResourceAccessor)
+	if !ok {
+		return nil
+	}
+	parent := accessor.(*Resource).GetParent()
+	if parent == nil || *parent == "" {
+		return nil
+	}
+	return ValidateParent(ctx, s.db, accessor.GetOrgID(), accessor.GetName(), *parent, new(R))
 }
