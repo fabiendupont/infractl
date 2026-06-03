@@ -6,8 +6,11 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
@@ -184,5 +187,117 @@ func TestDispatcherNoHandlers(t *testing.T) {
 	}
 	if run != nil {
 		t.Errorf("expected nil run for no handlers, got %+v", run)
+	}
+}
+
+// asyncExecutor simulates an async executor where Submit returns Pending
+// and Poll returns the final status after a configured number of polls.
+type asyncExecutor struct {
+	mu         sync.Mutex
+	runs       map[string]*Run
+	pollCounts map[string]int
+	readyAfter int
+}
+
+func newAsyncExecutor(readyAfter int) *asyncExecutor {
+	return &asyncExecutor{
+		runs:       make(map[string]*Run),
+		pollCounts: make(map[string]int),
+		readyAfter: readyAfter,
+	}
+}
+
+func (e *asyncExecutor) Submit(_ context.Context, h Handler, _ map[string]interface{}) (*Run, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	run := &Run{ID: "async-" + h.Ref, Status: RunPending}
+	e.runs[run.ID] = run
+	return run, nil
+}
+
+func (e *asyncExecutor) Poll(_ context.Context, runID string) (*Run, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pollCounts[runID]++
+	if e.pollCounts[runID] >= e.readyAfter {
+		return &Run{
+			ID:      runID,
+			Status:  RunCompleted,
+			Outputs: map[string]interface{}{"result": "done"},
+		}, nil
+	}
+	return &Run{ID: runID, Status: RunRunning}, nil
+}
+
+func (e *asyncExecutor) Cancel(_ context.Context, _ string) error { return nil }
+
+func TestStatusPolling(t *testing.T) {
+	table := NewDispatchTable()
+	table.Register(Handler{
+		ResourceType: "Server", Event: "create",
+		Phase: PhaseMain, Ref: "provision",
+	})
+
+	exec := newAsyncExecutor(2)
+	logger := zerolog.Nop()
+	dispatcher := NewDispatcher(table, exec, logger)
+
+	orgID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
+	run, err := dispatcher.Dispatch(context.Background(), "Server", "create",
+		map[string]interface{}{"name": "test"},
+		DispatchOpts{OrgID: orgID, Name: "my-server"},
+	)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if run.Status != RunPending {
+		t.Errorf("initial status = %q, want %q", run.Status, RunPending)
+	}
+	if dispatcher.InFlightCount() != 1 {
+		t.Errorf("in-flight = %d, want 1", dispatcher.InFlightCount())
+	}
+
+	var callbackCalled bool
+	var callbackTracked TrackedRun
+	var callbackRun *Run
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	dispatcher.StartPolling(ctx, 50*time.Millisecond, func(_ context.Context, tracked TrackedRun, r *Run) error {
+		callbackCalled = true
+		callbackTracked = tracked
+		callbackRun = r
+		return nil
+	})
+
+	// Wait for polling to detect completion.
+	deadline := time.After(3 * time.Second)
+	for {
+		if dispatcher.InFlightCount() == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for polling to complete")
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+
+	if !callbackCalled {
+		t.Fatal("callback was not called")
+	}
+	if callbackTracked.ResourceType != "Server" {
+		t.Errorf("tracked ResourceType = %q, want %q", callbackTracked.ResourceType, "Server")
+	}
+	if callbackTracked.Name != "my-server" {
+		t.Errorf("tracked Name = %q, want %q", callbackTracked.Name, "my-server")
+	}
+	if callbackTracked.OrgID != orgID {
+		t.Errorf("tracked OrgID = %v, want %v", callbackTracked.OrgID, orgID)
+	}
+	if callbackRun.Status != RunCompleted {
+		t.Errorf("run status = %q, want %q", callbackRun.Status, RunCompleted)
 	}
 }
