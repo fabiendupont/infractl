@@ -9,29 +9,48 @@ Three infrastructure management projects -- FlightCtl (edge devices), OSAC (sove
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  infractl core                   │
-│  ┌──────────┐ ┌──────┐ ┌──────┐ ┌────────────┐ │
-│  │ resource/ │ │ api/ │ │auth/ │ │  provider/  │ │
-│  │  store    │ │server│ │tenant│ │  registry   │ │
-│  └──────────┘ └──────┘ └──────┘ │  hooks      │ │
-│  ┌──────────┐ ┌──────┐          │  profiles   │ │
-│  │ events/  │ │work/ │          └────────────┘ │
-│  │  bus     │ │ loop │                          │
-│  └──────────┘ └──────┘                          │
-└─────────────────────────────────────────────────┘
-                      │
-        ┌─────────────┼─────────────┐
-        ▼             ▼             ▼
- ┌─────────────┐ ┌──────────┐ ┌──────────┐
- │   edge/     │ │  cloud/  │ │   gpu/   │
- │  device     │ │ network  │ │ compute  │
- │  fleet      │ │ cluster  │ │ fabric   │
- │  (FlightCtl)│ │  (OSAC)  │ │  (NICo)  │
- └─────────────┘ └──────────┘ └──────────┘
+┌───────────────────────────────────────────────────────────┐
+│                      infractl core                        │
+│  ┌──────────┐ ┌──────┐ ┌──────┐ ┌────────────┐ ┌──────┐ │
+│  │ resource/ │ │ api/ │ │auth/ │ │  provider/  │ │ grpc/│ │
+│  │  store    │ │server│ │tenant│ │  registry   │ │server│ │
+│  │  proto    │ └──────┘ └──────┘ │  hooks      │ │ gw   │ │
+│  └──────────┘                    │  profiles   │ └──────┘ │
+│  ┌──────────┐ ┌──────┐          └────────────┘           │
+│  │ events/  │ │work/ │ ┌───────────┐ ┌──────────────┐    │
+│  │  bus     │ │ loop │ │ workflow/ │ │  platform/   │    │
+│  └──────────┘ │queue │ │ dispatch  │ │ tenant event │    │
+│               └──────┘ │ executor  │ │ secret task  │    │
+│                         └───────────┘ │ webhook policy│   │
+│                                       └──────────────┘    │
+└───────────────────────────────────────────────────────────┘
+                          │
+            ┌─────────────┼─────────────┐
+            ▼             ▼             ▼
+     ┌─────────────┐ ┌──────────┐ ┌──────────┐
+     │   edge/     │ │  cloud/  │ │   gpu/   │
+     │  device     │ │ network  │ │ compute  │
+     │  fleet      │ │ cluster  │ │ fabric   │
+     │  (FlightCtl)│ │  (OSAC)  │ │  (NICo)  │
+     └─────────────┘ └──────────┘ └──────────┘
 ```
 
-The core provides generic resource storage, API scaffolding, auth/tenancy enforcement, an event bus, and background work loops. Domain functionality is implemented in **providers** that register resource types, route handlers, and lifecycle hooks with the core.
+The core provides generic resource storage, API scaffolding, auth/tenancy enforcement, an event bus, background work loops, workflow dispatch, gRPC serving, and built-in platform providers for common infrastructure concerns. Domain functionality is implemented in **providers** that register resource types, route handlers, workflow actions, and lifecycle hooks with the core.
+
+## Packages
+
+| Package | Description |
+|---------|-------------|
+| `resource/` | Generic resource model and CRUD store (GORM/PostgreSQL, JSONB spec/status, parent nesting, finalizers, soft delete) |
+| `resource/proto/` | Protobuf adapter — shared `Metadata` message, `MetadataToProto`/`MetadataFromProto` converters |
+| `api/` | HTTP server, middleware, generic CRUD handlers (chi router, OpenAPI, Prometheus metrics) |
+| `auth/` | Authentication (Keycloak, `ContextAuthenticator` for gRPC), authorization (OPA), tenancy, attribution |
+| `provider/` | Provider interface, registry, hooks, profiles, discovery, external gRPC sidecar protocol |
+| `events/` | Event bus (in-memory, PostgreSQL NOTIFY, Valkey PUBLISH) and event store |
+| `work/` | Background work loops, PostgreSQL-backed task queue with retry and stale recovery |
+| `workflow/` | Dispatch table, executor interface, local executor, dispatcher (wires hooks to execution) |
+| `grpc/` | gRPC server, REST gateway, auth interceptors, generic service handler |
+| `platform/` | Built-in providers: tenant, event, secret, task, webhook, policy |
 
 ## Quick Start
 
@@ -113,6 +132,30 @@ INFRACTL_DB_DSN="host=localhost user=infractl dbname=infractl sslmode=disable" \
 go run ./cmd/infractl/ machines list
 go run ./cmd/infractl/ capabilities
 ```
+
+## Platform Providers
+
+infractl ships with six built-in providers that cover common infrastructure management concerns:
+
+| Provider | Description |
+|----------|-------------|
+| `platform/tenant` | System tenant (well-known UUID), global tenant CRUD |
+| `platform/event` | Read-only access over persisted event records |
+| `platform/secret` | Typed secrets with redacted GET and `/reveal` endpoint |
+| `platform/task` | Read-only view over task records with `/cancel` |
+| `platform/webhook` | Event subscriptions and delivery loop |
+| `platform/policy` | RBAC rules managed as resources |
+
+## Workflow Dispatch
+
+The `workflow/` package provides a dispatch table and executor model for running actions triggered by resource lifecycle events. A `DispatchTable` maps (ResourceType, Event, Phase) to prioritized handlers. The `Dispatcher` wires lifecycle hooks to an `Executor` (local in-process or remote via the AAP executor). Phases are pre, main, and post -- sync hooks can abort, async hooks fire after commit.
+
+## Consumer Projects
+
+| Project | Description |
+|---------|-------------|
+| [osac-infractl](https://github.com/osac-project/osac-workspace/tree/main/osac-infractl) | 10 domain providers for sovereign cloud provisioning, built on infractl |
+| [infractl-executor-aap](https://github.com/fabiendupont/infractl-executor-aap) | AAP Controller executor with OAuth2, mTLS, retry, and circuit breaker |
 
 ## Documentation
 

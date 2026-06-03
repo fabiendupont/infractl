@@ -9,9 +9,12 @@ Read `docs/source-projects.md` for exact file paths to reference implementations
 - **Compiles**: All packages build and pass `go vet`
 - **Unit tests pass**: auth/, provider/, resource/, resource/mixins/, resource/traits/, work/
 - **Integration/e2e tests written**: tests/integration/ and tests/e2e/ — require Podman or Docker for testcontainers-go PostgreSQL
-- **All core packages implemented**: resource/ (model, store, filter, pagination, mixins, traits), api/ (server, middleware, handlers, OpenAPI), auth/ (authn, authz, tenancy, Keycloak, OPA), provider/ (registry, hooks, profiles, discovery, external via gRPC), events/ (in-memory bus, PostgreSQL bus, Valkey bus, event store), work/ (loops, queue)
+- **All core packages implemented**: resource/ (model, store, filter, pagination, mixins, traits, parent nesting, finalizers, creator, InstrumentedStore, PartialUpdate), api/ (server, middleware, handlers, OpenAPI, Prometheus metrics), auth/ (authn, authz, tenancy, Keycloak, OPA, ContextAuthenticator, AttributionLogic), provider/ (registry, hooks, profiles, discovery, external via gRPC, GRPCProvider, WorkflowProvider), events/ (in-memory bus, PostgreSQL bus, Valkey bus, Valkey queue, event store), work/ (loops, queue), workflow/ (dispatch table, executor, local executor, dispatcher), grpc/ (server, gateway, interceptors, generic service handler, errors)
+- **Platform providers**: platform/ (tenant, event, secret, task, webhook, policy)
+- **Protobuf adapter**: resource/proto/ (Metadata proto, MetadataToProto/MetadataFromProto)
 - **Entry points**: cmd/infractl-server/ (server binary), cmd/infractl/ (CLI with machines and capabilities commands)
 - **Reference provider**: examples/inventory/ (model, handler, provider, OpenAPI spec)
+- **Consumer project**: osac-infractl (10 domain providers) and infractl-executor-aap (AAP Controller executor)
 
 ## Completed Tasks
 
@@ -68,11 +71,49 @@ All 8 gaps identified in the OSAC compatibility analysis have been closed:
 7. **Protobuf adapter** — Shared `Metadata` proto message, `MetadataToProto`/`MetadataFromProto` converters
 8. **Generic gRPC server factory** — `GenericServiceHandler[R]` generating CRUD handlers from Store + Adapter
 
+## Platform Providers — DONE
+
+Six built-in providers registered via the default profile:
+
+1. **Tenant** — system tenant (well-known UUID `00000000-0000-0000-0000-000000000000`), global tenant CRUD
+2. **Event** — read-only access over persisted `EventRecord`
+3. **Secret** — typed secrets with redacted GET and `/reveal` endpoint
+4. **Task** — read-only view over `TaskRecord` with `/cancel`
+5. **Webhook** — event subscriptions and delivery loop
+6. **Policy** — RBAC rules managed as resources
+
+E2e tests cover all six providers.
+
+## Workflow Dispatch — DONE
+
+`workflow/` package implements a dispatch table and executor model:
+
+- `Handler` model: ResourceType, Event, Phase (pre/main/post), Priority, Ref, Metadata
+- `DispatchTable` — register handlers and sorted lookup by (ResourceType, Event, Phase)
+- `Executor` interface — Submit/Poll/Cancel
+- `LocalExecutor` — in-process execution for dev and FlightCtl-style deployments
+- `Dispatcher` — wires lifecycle hooks to executor, `RegisterHooks` registers reactions
+- `ReactionRegistrar` interface to avoid import cycles between workflow and provider packages
+- `WorkflowProvider` interface on providers, `WorkflowProviders()` on Registry
+
+## Resource Model Enhancements — DONE
+
+- `Parent *string` field for generic resource nesting (`ValidateParent`, `HasChildren`, `ListChildren`)
+- `Finalizers JSONArray` with `DeletionTimestamp` and `ErrFinalizersPending` for graceful deletion
+- `Creator string` field for attribution
+- `SetOrgID(uuid.UUID)` on `ResourceAccessor`
+- `PartialUpdate` on Store for field-level updates with optimistic concurrency
+- `InstrumentedStore[R]` wrapping any Store with Prometheus histogram per operation
+
 ## What's Next
 
 Potential future work (not yet prioritized):
 
-- **Build an OSAC resource as an infractl provider** — pick one resource type (e.g., Tenant) and implement it as a gRPC provider using the new framework to validate the integration end-to-end
+- **Status polling** — background loops that poll external systems for resource status updates
+- **Hub discovery** — multi-cluster provider discovery and registration
+- **Cross-resource validation** — sync hooks that validate references between resource types across providers
+- **Organization resource** — first-class Organization resource type to replace raw org_id UUIDs
+- **osac-infractl CI** — CI pipeline for the osac-infractl consumer project
 - **Example external provider sidecar** — a minimal out-of-process provider to demonstrate the gRPC protocol
 - **OpenTelemetry tracing** — distributed tracing for requests across REST and gRPC
 - **Additional event bus backends** — NATS, Kafka

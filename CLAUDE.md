@@ -14,11 +14,14 @@ Each of these projects reimplements the same foundational patterns: generic CRUD
 
 Provider-based extensible platform. The core provides:
 
-- **Generic resource store** -- GORM/PostgreSQL with JSONB for spec/status fields
+- **Generic resource store** -- GORM/PostgreSQL with JSONB for spec/status fields, parent nesting, finalizers, instrumented metrics
 - **REST API scaffolding** -- OpenAPI 3.0 specs + oapi-codegen + chi router
-- **Auth/tenancy middleware** -- Authentication, authorization, org-scoped isolation
-- **Event system** -- PostgreSQL NOTIFY with sync and async hooks
+- **gRPC server** -- gRPC with REST gateway, auth interceptors, generic service handler
+- **Auth/tenancy middleware** -- Authentication, authorization, org-scoped isolation, attribution logic
+- **Event system** -- PostgreSQL NOTIFY, Valkey PUBLISH, with sync and async hooks
 - **Work loops** -- Background task processing and reconciliation queues
+- **Workflow dispatch** -- Dispatch table, executor interface, hook-to-executor wiring
+- **Platform providers** -- Built-in tenant, event, secret, task, webhook, and policy providers
 
 Domain functionality lives in **providers** that implement a standard interface and register themselves with the core registry. Providers are composed into deployable binaries via compile-time profiles.
 
@@ -47,35 +50,55 @@ go vet ./...            # Static analysis
 ```
 infractl/
   resource/             Generic resource model and CRUD store
-                        Defines the base Resource type with metadata, spec (JSONB),
-                        and status (JSONB). Provides a Store interface for typed
-                        CRUD operations backed by GORM/PostgreSQL.
+                        Base Resource type with metadata, spec/status (JSONB),
+                        parent nesting, finalizers, creator attribution.
+                        Store interface with CRUD, PartialUpdate, soft delete.
+                        InstrumentedStore for Prometheus metrics.
+
+  resource/proto/       Protobuf adapter for resource metadata
+                        Shared Metadata proto message, MetadataToProto and
+                        MetadataFromProto converters for gRPC interop.
 
   api/                  HTTP server, middleware, generic CRUD handlers
-                        Chi-based router with OpenAPI integration. Provides reusable
+                        Chi-based router with OpenAPI integration. Reusable
                         handler factories for standard CRUD endpoints. Middleware
                         chain handles auth, tenancy, logging, and error mapping.
 
   auth/                 Authentication, authorization, tenancy
-                        Token validation, RBAC policy evaluation, and org_id
-                        extraction/enforcement. Pluggable backends for different
-                        identity providers.
+                        Token validation (Keycloak), RBAC (OPA), org_id enforcement.
+                        ContextAuthenticator for gRPC. AttributionLogic interface
+                        with SubjectAttributionLogic and GuestAttributionLogic.
 
   provider/             Provider interface, registry, hooks, profiles
-                        Defines the Provider interface that domain packages implement.
-                        Registry manages provider lifecycle (init, start, stop).
-                        Profiles select which providers compile into a given binary.
-                        Hook points allow providers to react to resource events.
+                        Provider, APIProvider, GRPCProvider, WorkflowProvider
+                        interfaces. Registry manages lifecycle (init, start, stop).
+                        Profiles select providers for a binary. Hook points for
+                        resource events. External provider gRPC sidecar protocol.
 
   events/               Event bus and CRUD lifecycle hooks
-                        PostgreSQL NOTIFY/LISTEN-based event bus. Sync hooks run
-                        in-transaction and can abort operations. Async hooks fire
-                        after commit for reactions and side effects.
+                        In-memory, PostgreSQL NOTIFY/LISTEN, and Valkey PUBLISH
+                        bus implementations. Sync hooks run in-transaction and
+                        can abort. Async hooks fire after commit.
 
   work/                 Background work loops and task queues
-                        Periodic reconciliation loops and one-shot task queues.
-                        Used by providers for background processing like status
-                        polling, cleanup, and external system synchronization.
+                        Periodic reconciliation loops and PostgreSQL-backed task
+                        queue with retry, backoff, and stale recovery.
+
+  workflow/             Dispatch table and executor model
+                        DispatchTable maps (ResourceType, Event, Phase) to
+                        prioritized handlers. Executor interface (Submit/Poll/
+                        Cancel) with LocalExecutor for in-process execution.
+                        Dispatcher wires lifecycle hooks to executor.
+
+  grpc/                 gRPC server, REST gateway, auth interceptors
+                        Server with TLS, gateway for REST-to-gRPC bridging,
+                        auth interceptors, GenericServiceHandler for typed
+                        CRUD over gRPC, error mapping.
+
+  platform/             Built-in platform providers
+                        tenant, event, secret, task, webhook, policy — provide
+                        common infrastructure management capabilities out of
+                        the box.
 
   examples/inventory/   Reference provider implementation
                         Minimal working provider that demonstrates registration,

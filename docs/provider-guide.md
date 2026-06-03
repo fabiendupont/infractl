@@ -260,11 +260,120 @@ func (p *InventoryProvider) MigrationSource() fs.FS {
 var _ provider.MigrationProvider = (*InventoryProvider)(nil)
 ```
 
-## 4. Cross-Provider Hooks
+## 4. Using Platform Providers
+
+infractl ships six built-in platform providers in `platform/` that handle common infrastructure concerns: tenant, event, secret, task, webhook, and policy. These are registered in the default profile and available in every deployment.
+
+Domain providers should use these platform features rather than reimplementing them. For example, if your provider needs to store credentials, depend on the `secret` feature and look up the secret provider at runtime rather than building your own secret store.
+
+To declare a dependency on a platform feature, list it in `Dependencies()`:
+
+```go
+func (p *MyProvider) Dependencies() []string {
+    return []string{"secret", "event"}
+}
+```
+
+The registry ensures the platform providers initialize before yours. Platform resources such as tenants and policies use `resource.SystemTenantID` for global scope.
+
+## 5. Resource Nesting
+
+Resources can form parent-child hierarchies using the `Parent` field on `resource.Resource`. A child resource references its parent by name within the same org and table.
+
+### Setting a parent
+
+Set the `Parent` field before calling Create or Update:
+
+```go
+parent := "us-east-cluster"
+machine := &Machine{
+    Resource: resource.Resource{
+        OrgID:  orgID,
+        Name:   "worker-01",
+        Parent: &parent,
+    },
+    Spec: resource.JSONField[MachineSpec]{Data: MachineSpec{Arch: "x86_64"}},
+}
+
+err := store.Create(ctx, machine)
+```
+
+The store automatically validates that:
+1. The parent resource exists in the same org and table
+2. Assigning the parent would not create a cycle (checked by walking the ancestor chain)
+
+If validation fails, Create and Update return `ErrParentNotFound` or `ErrCircularParent`.
+
+### Deletion protection
+
+Deleting a resource that has children returns `ErrHasChildren`. Children must be deleted or re-parented first.
+
+### Querying the hierarchy
+
+The `resource` package provides helper functions for working with hierarchies:
+
+```go
+resource.ValidateParent(ctx, db, orgID, name, parentName, model)  // Validate a parent reference
+resource.HasChildren(ctx, db, orgID, name, model)                  // Check if a resource has children
+resource.ListChildren(ctx, db, orgID, name, model)                 // List direct child names
+```
+
+## 6. Finalizers
+
+Finalizers block resource deletion until external cleanup completes. A provider that creates external resources (cloud instances, DNS records, etc.) adds a finalizer during creation and removes it after cleanup.
+
+### Adding a finalizer
+
+```go
+func (p *ComputeProvider) createInstance(ctx context.Context, machine *Machine) error {
+    machine.AddFinalizer("compute.cleanup")
+    return p.store.Create(ctx, machine)
+}
+```
+
+### Deletion with finalizers
+
+When `Delete` is called on a resource with finalizers, the store sets `DeletionTimestamp` but does not soft-delete the resource. It returns `ErrFinalizersPending`. The provider watches for resources with a non-nil `DeletionTimestamp`, performs cleanup, removes its finalizer, and calls Delete again:
+
+```go
+machine.RemoveFinalizer("compute.cleanup")
+if err := store.Update(ctx, machine); err != nil {
+    return err
+}
+// If no finalizers remain, a subsequent Delete completes the soft-delete.
+return store.Delete(ctx, orgID, machine.Name)
+```
+
+## 7. Emitting Lifecycle Events
+
+To emit resource lifecycle events that trigger hooks and workflow dispatch, use the `events.LifecycleHandler`. Create one from the event bus in `provider.Context`:
+
+```go
+func (p *InventoryProvider) Init(ctx provider.Context) error {
+    p.lifecycle = events.NewLifecycleHandler(ctx.Bus)
+    // ...
+}
+```
+
+Then call `OnCreate`, `OnUpdate`, or `OnDelete` after each CRUD operation:
+
+```go
+func (p *InventoryProvider) createMachine(w http.ResponseWriter, r *http.Request) {
+    // ... create logic ...
+    p.lifecycle.OnCreate(r.Context(), "machine", machine.Name, machine.OrgID)
+    writeJSON(w, http.StatusCreated, machine)
+}
+```
+
+These events are published to the event bus and persisted to the event store for audit. They also trigger any registered hooks and workflow dispatch actions.
+
+The generic `RegisterCRUDRoutes` helper in the `api` package does not emit lifecycle events automatically -- providers that need events should either wrap the generic handler or implement their own handler methods that call the `LifecycleHandler`.
+
+### Cross-provider hooks
 
 Hooks let providers interact without importing each other. A storage provider can block machine deletion; a monitoring provider can react to machine creation.
 
-### Registering a sync hook
+#### Registering a sync hook
 
 Sync hooks run inline within the caller's transaction. Returning an error aborts the operation.
 
@@ -308,7 +417,7 @@ func (p *StorageProvider) blockDeleteIfVolumesAttached(
 }
 ```
 
-### Registering an async reaction
+#### Registering an async reaction
 
 Reactions fire after the transaction commits. They run asynchronously and cannot abort the original operation.
 
@@ -340,7 +449,7 @@ func (p *MonitoringProvider) setupDashboard(
 }
 ```
 
-### Hook naming convention
+#### Hook naming convention
 
 Hook names follow the pattern `{resource_type}.{pre|post}_{action}`:
 
@@ -353,7 +462,68 @@ Hook names follow the pattern `{resource_type}.{pre|post}_{action}`:
 | `machine.pre_delete` | Before soft-deleting a machine |
 | `machine.post_delete` | After soft-deleting a machine (committed) |
 
-## 5. Deployment Profiles
+## 8. Workflow Dispatch
+
+If your provider needs to trigger async workflows when resources are created or deleted, implement the `WorkflowProvider` interface:
+
+```go
+import "github.com/fabiendupont/infractl/workflow"
+
+func (p *ComputeProvider) RegisterActions(table *workflow.DispatchTable) {
+    table.Register(workflow.Handler{
+        ResourceType: "machine",
+        Event:        "create",
+        Phase:        workflow.PhaseMain,
+        Priority:     100,
+        Ref:          "compute.provision",
+        Metadata:     map[string]string{"timeout": "30m"},
+    })
+
+    table.Register(workflow.Handler{
+        ResourceType: "machine",
+        Event:        "delete",
+        Phase:        workflow.PhaseMain,
+        Priority:     100,
+        Ref:          "compute.deprovision",
+    })
+}
+
+var _ provider.WorkflowProvider = (*ComputeProvider)(nil)
+```
+
+### How dispatch works
+
+1. When a resource is created, the event system fires a `post_create` hook.
+2. The `Dispatcher` (registered as an async reaction) looks up all handlers for `(resource_type, "create")` in the dispatch table.
+3. Handlers run in phase order: **pre** (can abort), **main** (submitted to executor), **post** (fire-and-forget, receives main outputs).
+4. The executor interprets the `Ref` field -- a `LocalExecutor` looks up a Go function by that name, while an AAP executor maps it to a job template.
+
+### Registering local handler functions
+
+For in-process execution during development, register Go functions with the `LocalExecutor`:
+
+```go
+func (p *ComputeProvider) Init(ctx provider.Context) error {
+    if local, ok := ctx.Executor.(*workflow.LocalExecutor); ok {
+        local.Register("compute.provision", p.provisionMachine)
+        local.Register("compute.deprovision", p.deprovisionMachine)
+    }
+    return nil
+}
+
+func (p *ComputeProvider) provisionMachine(
+    ctx context.Context, input map[string]interface{},
+) (map[string]interface{}, error) {
+    // ... provision logic ...
+    return map[string]interface{}{"instance_id": id}, nil
+}
+```
+
+### Lifecycle event integration
+
+The `Dispatcher.RegisterHooks(registrar)` method connects the dispatch table to the provider hook system. It registers async reactions for `post_create` and `post_delete` events on every resource type that has handlers. This is called once by the application startup code after all `WorkflowProvider.RegisterActions` calls complete.
+
+## 9. Deployment Profiles
 
 Profiles control which providers are active in a given deployment. Define profiles in a YAML configuration file:
 
@@ -409,7 +579,39 @@ When no profile is set, all registered providers are activated. This is useful d
 
 The registry validates at startup that all dependencies within the active profile are satisfiable. A missing dependency causes a startup error with a clear message indicating which feature is needed and which provider requires it.
 
-## 6. External Provider (gRPC Sidecar)
+## 10. Adding gRPC Endpoints
+
+To serve gRPC endpoints, implement the `GRPCProvider` interface by adding a `RegisterServices` method:
+
+```go
+import "google.golang.org/grpc"
+
+func (p *InventoryProvider) RegisterServices(s *grpc.Server) {
+    pb.RegisterMachineServiceServer(s, p.grpcHandler)
+}
+
+var _ provider.GRPCProvider = (*InventoryProvider)(nil)
+```
+
+### GenericServiceHandler
+
+For standard CRUD operations, embed `grpcpkg.GenericServiceHandler[R]` in your gRPC service implementation. It provides `Create`, `Get`, `List`, `Update`, `PartialUpdate`, and `Delete` methods that delegate to the resource store and handle tenant resolution, creator attribution, and error mapping.
+
+You must implement a `ResourceAdapter[R]` to convert between your Go types and protobuf messages:
+
+```go
+type MachineAdapter struct{}
+
+func (a *MachineAdapter) ToProto(m *Machine) interface{}     { /* ... */ }
+func (a *MachineAdapter) FromProto(msg interface{}) (*Machine, error) { /* ... */ }
+func (a *MachineAdapter) ToProtoList(items []Machine, continueToken string, total int64) interface{} { /* ... */ }
+```
+
+### Auth interceptors
+
+The gRPC server uses `AuthInterceptor` and `StreamAuthInterceptor` from the `grpc` package. These use the same `ContextAuthenticator`, `TenancyLogic`, and `Authorizer` interfaces as the HTTP middleware, so auth behavior is consistent across both protocols.
+
+## 11. External Provider (gRPC Sidecar)
 
 For providers that must run out-of-process -- different language, independent release cycle, crash isolation, or partner-contributed -- infractl supports a gRPC sidecar protocol over Unix domain sockets.
 
@@ -462,7 +664,7 @@ The external provider must create and listen on the Unix domain socket before in
 
 If an external provider's socket is unavailable at startup, the registry returns an error and the server does not start. If the connection drops during runtime, requests routed to that provider return 503 (Service Unavailable) until the connection is re-established. The core process periodically attempts to reconnect.
 
-## Complete Example
+## 12. Complete Example
 
 The `examples/inventory/` directory contains a complete, runnable provider implementation:
 

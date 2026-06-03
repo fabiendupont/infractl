@@ -16,17 +16,28 @@ Every resource in infractl embeds a common base structure:
 
 ```go
 type Resource struct {
-    OrgID           uuid.UUID       // Tenant identifier, scopes all queries
-    Name            string          // Unique within an org
-    Labels          JSONMap          // Key-value pairs for filtering
-    Annotations     JSONMap          // Arbitrary metadata
-    Generation      int64           // Incremented on spec changes
-    ResourceVersion int64           // Incremented on any write (optimistic concurrency)
-    CreatedAt       time.Time
-    UpdatedAt       time.Time
-    DeletedAt       *time.Time      // Soft delete
+    OrgID             uuid.UUID      // Tenant identifier, scopes all queries
+    Name              string         // Unique within an org
+    Parent            *string        // Optional parent resource name for nesting
+    Labels            JSONMap         // Key-value pairs for filtering
+    Annotations       JSONMap         // Arbitrary metadata
+    Finalizers        JSONArray       // Named finalizers that block deletion
+    Generation        int64          // Incremented on spec changes
+    ResourceVersion   int64          // Incremented on any write (optimistic concurrency)
+    Owner             *string        // Optional owning entity
+    Creator           string         // Identity that created the resource
+    CreatedAt         time.Time
+    UpdatedAt         time.Time
+    DeletionTimestamp *time.Time     // Set when delete is requested with finalizers pending
+    DeletedAt         gorm.DeletedAt // Soft delete
 }
 ```
+
+**Parent** enables hierarchical resource nesting. A resource can reference another resource of the same type and org as its parent. The store validates parent references on Create and Update -- it rejects references to nonexistent parents and detects cycles by walking the ancestor chain. Deleting a resource that has children returns `ErrHasChildren`. Helper functions `ValidateParent`, `HasChildren`, and `ListChildren` in the `resource` package encapsulate these checks.
+
+**Finalizers** block soft-deletion until external cleanup completes. When a Delete is called on a resource with finalizers, the store sets `DeletionTimestamp` but defers the actual soft-delete, returning `ErrFinalizersPending`. Controllers remove their finalizer after cleanup; once no finalizers remain, a subsequent Delete completes the soft-delete.
+
+**Creator** records the identity that created the resource. It is set automatically during Create when `AttributionLogic` is configured (see the auth section below).
 
 Spec and Status are stored as JSONB columns in PostgreSQL. Go generics parameterize the concrete types:
 
@@ -44,11 +55,12 @@ The composite key is `(OrgID, Name)`, enforcing name uniqueness within a tenant 
 
 `GenericStore[R Resource]` provides typed CRUD operations over any resource that embeds `resource.Resource`:
 
-- **Create** -- inserts with `OrgID` set by the caller, sets initial `Generation` and `ResourceVersion` to 1. Returns `ErrAlreadyExists` on duplicate `(OrgID, Name)`
+- **Create** -- inserts with `OrgID` set by the caller, sets initial `Generation` and `ResourceVersion` to 1. Validates parent references if the `Parent` field is set. Returns `ErrAlreadyExists` on duplicate `(OrgID, Name)`
 - **Get** -- retrieves by `(OrgID, Name)`, returns `ErrNotFound` for missing or soft-deleted resources
 - **List** -- paginated listing with filter expressions, cursor-based pagination, and label selectors
-- **Update** -- conditional update using `ResourceVersion` for optimistic concurrency; returns `ErrConflict` on version mismatch; increments `Generation` if spec changed (detected via `GenerationTracker` interface)
-- **Delete** -- soft delete by setting `DeletedAt`, preserving audit trail
+- **Update** -- conditional update using `ResourceVersion` for optimistic concurrency; returns `ErrConflict` on version mismatch; increments `Generation` if spec changed (detected via `GenerationTracker` interface). Validates parent references if changed
+- **PartialUpdate** -- updates only the specified fields using a `map[string]interface{}`, with optimistic concurrency via `ResourceVersion`. Useful for status-only updates where sending the full resource body is unnecessary
+- **Delete** -- soft delete by setting `DeletedAt`, preserving audit trail. If the resource has finalizers, sets `DeletionTimestamp` and returns `ErrFinalizersPending` instead. If the resource has children (other resources referencing it as parent), returns `ErrHasChildren`
 
 All store operations automatically scope queries to the caller's `OrgID`, making tenant isolation a structural guarantee rather than a per-query concern.
 
@@ -121,12 +133,36 @@ The auth layer handles identity verification, access control, and tenant scoping
 
 #### Authentication (AuthN)
 
-Authentication is pluggable through the `Authenticator` interface. Supported backends:
+Authentication is pluggable through two interfaces:
+
+- **`Authenticator`** -- extracts an authenticated `Subject` from an `*http.Request`. Used by the chi HTTP middleware.
+- **`ContextAuthenticator`** -- extracts an authenticated `Subject` from a `context.Context`. Used by gRPC interceptors where no HTTP request is available.
+
+The `GuestAuthenticator` implements both interfaces, making it usable in HTTP and gRPC contexts. Supported backends:
 
 - **Keycloak OIDC** -- validates JWT tokens against a Keycloak realm, extracts user identity and group memberships, caches JWKS keys with TTL
 - **Guest mode** -- development-only backend that accepts all requests with a configurable default identity
 
 Each authenticator produces a `Subject` that flows through the rest of the request.
+
+Context helpers `ContextWithSubject`, `SubjectFromContext`, `ContextWithOrgID`, and `OrgIDFromContext` store and retrieve auth state from `context.Context`, shared by both HTTP and gRPC code paths.
+
+#### Attribution
+
+The `AttributionLogic` interface determines the creator identity assigned to newly created resources:
+
+```go
+type AttributionLogic interface {
+    DetermineAssignedCreator(ctx context.Context) (string, error)
+}
+```
+
+Two implementations are provided:
+
+- **`SubjectAttributionLogic`** -- assigns the authenticated user (from the `Subject` in context) as the creator. Used in production.
+- **`GuestAttributionLogic`** -- always assigns a fixed creator string. Used in development.
+
+Attribution is injected via `provider.Context` and consumed by generic CRUD handlers (both HTTP and gRPC) to set the `Creator` field on new resources.
 
 #### Subject Model
 
@@ -214,7 +250,7 @@ type GRPCProvider interface {
 
 type WorkflowProvider interface {
     Provider
-    RegisterWorkflows(registry interface{})
+    RegisterActions(table *workflow.DispatchTable)
 }
 
 type MigrationProvider interface {
@@ -225,7 +261,7 @@ type MigrationProvider interface {
 
 - **APIProvider** -- contributes HTTP routes to the chi REST API server
 - **GRPCProvider** -- contributes gRPC services to the gRPC server
-- **WorkflowProvider** -- registers async workflows with a workflow engine (Temporal, AAP, in-process, or other). The registry type is intentionally `interface{}` to avoid coupling infractl to a specific engine.
+- **WorkflowProvider** -- registers resource lifecycle actions with the workflow dispatch table (see the workflow section below). Actions map `(resource_type, event)` pairs to executor-specific handler references.
 - **MigrationProvider** -- contributes database migrations (returns an `fs.FS` containing SQL migration files)
 
 #### Registry
@@ -366,6 +402,121 @@ The database backing ensures tasks survive process restarts and can be distribut
 
 - OSAC's `internal/work/work_loop.go` (215 lines): interval-based execution with kick-to-wake
 - FlightCtl's `internal/tasks/consumer.go`: task queue with claim semantics
+
+### workflow/ -- Workflow Dispatch
+
+The workflow layer connects resource lifecycle events to pluggable execution backends. When a resource is created or deleted, the dispatcher looks up registered handlers and submits them to an executor.
+
+#### DispatchTable
+
+The `DispatchTable` maps `(resource_type, event)` pairs to an ordered list of `Handler` entries. Thread-safe for concurrent registration and lookup.
+
+```go
+type Handler struct {
+    ResourceType string            // e.g. "machine", "cluster"
+    Event        string            // e.g. "create", "delete"
+    Phase        Phase             // PhasePre, PhaseMain, or PhasePost
+    Priority     int               // Lower values run first within a phase
+    Ref          string            // Opaque reference interpreted by the executor
+    Metadata     map[string]string // Extra key-value pairs for the executor
+}
+```
+
+`Lookup` returns handlers sorted by phase (pre, main, post) and then by priority within each phase. The `Ref` field is opaque to infractl -- the executor interprets it as a Temporal workflow ID, AAP job template name, Go function name, or anything else.
+
+#### Phase Ordering
+
+Handlers execute in three phases:
+
+- **Pre** -- runs synchronously before the main action. Can abort the operation by returning an error. Use for validation or approval gates.
+- **Main** -- the primary action, submitted to the executor. Produces outputs that are passed to post-phase handlers.
+- **Post** -- runs after main completes. Receives the merged inputs and outputs. Fire-and-forget; failures are logged but do not abort the operation.
+
+#### Executor Interface
+
+```go
+type Executor interface {
+    Submit(ctx context.Context, handler Handler, input map[string]interface{}) (*Run, error)
+    Poll(ctx context.Context, runID string) (*Run, error)
+    Cancel(ctx context.Context, runID string) error
+}
+```
+
+`Submit` sends a handler for execution and returns a `Run` with an ID and status. `Poll` checks the current state of a running workflow. `Cancel` requests cancellation. Executor implementations are backend-specific:
+
+- **`LocalExecutor`** -- runs handlers as in-process Go functions. `Submit` executes synchronously and returns a completed (or failed) `Run` immediately. Used for development and simple deployments.
+- **AAP** -- submits handlers as Ansible Automation Platform job templates (external executor, separate package).
+- **Temporal** -- submits handlers as Temporal workflows (planned).
+
+#### Dispatcher
+
+The `Dispatcher` wires resource lifecycle events to workflow execution. It reads from a `DispatchTable` and delegates to an `Executor`:
+
+```go
+dispatcher := workflow.NewDispatcher(table, executor, logger)
+```
+
+`Dispatcher.Dispatch(ctx, resourceType, event, input)` executes all handlers for the event in phase order. `Dispatcher.RegisterHooks(registrar)` connects the dispatcher to the provider hook system by registering async reactions for `post_create` and `post_delete` events on every resource type that has handlers in the dispatch table.
+
+### grpc/ -- gRPC Server
+
+The gRPC layer provides a server skeleton, auth interceptors, a REST proxy, and generic CRUD handlers for serving resources over gRPC.
+
+#### Server
+
+`grpc.NewServer` creates a gRPC server with health check (`grpc.health.v1.Health`) and reflection services pre-registered. TLS is configured via `ServerConfig.TLSCert` and `ServerConfig.TLSKey`; if both are set, the server requires TLS 1.2+.
+
+```go
+srv := grpc.NewServer(cfg, logger, grpc.ChainUnaryInterceptor(
+    grpcpkg.AuthInterceptor(authn, tenancy, authz, logger),
+))
+```
+
+#### Auth Interceptors
+
+`AuthInterceptor` (unary) and `StreamAuthInterceptor` (stream) enforce authentication, tenancy, and authorization using the same `ContextAuthenticator`, `TenancyLogic`, and `Authorizer` interfaces as the chi HTTP middleware. This ensures consistent auth semantics across HTTP and gRPC.
+
+The interceptors extract the `Subject` from context, resolve the default tenant, store both in context via `ContextWithSubject` and `ContextWithOrgID`, and call `Authorize` with the full gRPC method name.
+
+#### grpc-gateway REST Proxy
+
+The `Gateway` translates HTTP/JSON requests to gRPC calls using grpc-gateway. Providers register their gateway handlers via `RegisterService`:
+
+```go
+gw.RegisterService(ctx, pb.RegisterMachineServiceHandlerFromEndpoint)
+```
+
+The gateway can be mounted on an existing chi router via `gw.Handler()` or run as a standalone HTTP server.
+
+#### GenericServiceHandler
+
+`GenericServiceHandler[R]` provides typed CRUD operations over gRPC for any resource type:
+
+```go
+type GenericServiceHandler[R any] struct {
+    Store       resource.Store[R]
+    Adapter     ResourceAdapter[R]
+    Tenancy     auth.TenancyLogic
+    Attribution auth.AttributionLogic
+}
+```
+
+Providers implement the `ResourceAdapter[R]` interface to convert between Go types and protobuf messages. The handler provides `Create`, `Get`, `List`, `Update`, `PartialUpdate`, and `Delete` methods. `PartialUpdate` accepts a field map for targeted updates with optimistic concurrency. Store errors are mapped to gRPC status codes: `ErrNotFound` to `NotFound`, `ErrAlreadyExists` to `AlreadyExists`, `ErrConflict` to `Aborted`.
+
+### platform/ -- Built-in Platform Providers
+
+The `platform/` directory contains six built-in providers that supply foundational services used by domain providers. These are registered in the default profile and are available in every deployment.
+
+| Provider | Feature | Description |
+|----------|---------|-------------|
+| `tenant` | `tenant` | Tenant management -- CRUD for tenant records |
+| `event` | `event` | Event browsing -- read access to the event audit log |
+| `secret` | `secret` | Secret storage -- CRUD with a dedicated `/reveal` endpoint for decrypted access |
+| `task` | `task` | Task management -- visibility into the async task queue |
+| `webhook` | `webhook` | Webhook registration -- CRUD for webhook subscriptions triggered by events |
+| `policy` | `policy` | Policy management -- CRUD for authorization policy documents |
+
+Platform providers use `resource.SystemTenantID` (`00000000-0000-0000-0000-000000000000`) for global resources such as tenant records and policies that are not scoped to a user tenant. Domain providers should depend on these platform features rather than reimplementing secret storage, event publishing, or tenant management.
 
 ## Provider Lifecycle
 
