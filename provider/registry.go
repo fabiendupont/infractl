@@ -169,6 +169,18 @@ func (r *Registry) GRPCProviders() []GRPCProvider {
 	return result
 }
 
+// WorkflowProviders returns all registered providers that implement
+// WorkflowProvider, in dependency-resolved order.
+func (r *Registry) WorkflowProviders() []WorkflowProvider {
+	var result []WorkflowProvider
+	for _, name := range r.order {
+		if wp, ok := r.providers[name].(WorkflowProvider); ok {
+			result = append(result, wp)
+		}
+	}
+	return result
+}
+
 // MigrationProviders returns all registered providers that implement
 // MigrationProvider, in dependency-resolved order.
 func (r *Registry) MigrationProviders() []MigrationProvider {
