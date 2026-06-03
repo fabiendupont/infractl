@@ -28,6 +28,7 @@ import (
 // generic R in GenericStore. The Resource struct satisfies this interface.
 type ResourceAccessor interface {
 	GetOrgID() uuid.UUID
+	SetOrgID(uuid.UUID)
 	GetName() string
 	GetParent() *string
 	GetResourceVersion() int64
@@ -88,7 +89,8 @@ func (r *Resource) BeforeUpdate(_ *gorm.DB) error {
 	return nil
 }
 
-func (r *Resource) GetOrgID() uuid.UUID        { return r.OrgID }
+func (r *Resource) GetOrgID() uuid.UUID         { return r.OrgID }
+func (r *Resource) SetOrgID(id uuid.UUID)       { r.OrgID = id }
 func (r *Resource) GetName() string             { return r.Name }
 func (r *Resource) GetResourceVersion() int64   { return r.ResourceVersion }
 func (r *Resource) SetResourceVersion(v int64)  { r.ResourceVersion = v }
