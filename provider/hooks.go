@@ -86,6 +86,17 @@ func (r *Registry) RegisterReaction(reaction Reaction) {
 	r.hooks.reactions[key] = append(r.hooks.reactions[key], reaction)
 }
 
+// RegisterReactionFunc is a convenience method that satisfies the
+// workflow.ReactionRegistrar interface without requiring callers to
+// construct a Reaction struct.
+func (r *Registry) RegisterReactionFunc(feature, event string, callback func(ctx context.Context, payload interface{})) {
+	r.RegisterReaction(Reaction{
+		Feature:  feature,
+		Event:    event,
+		Callback: callback,
+	})
+}
+
 // HookRunner provides hook firing capabilities to operations. It wraps
 // the hook registry and exposes sync and async firing methods.
 type HookRunner struct {

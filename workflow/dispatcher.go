@@ -10,6 +10,12 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// ReactionRegistrar accepts async reaction registrations. This avoids
+// importing the provider package, breaking the import cycle.
+type ReactionRegistrar interface {
+	RegisterReactionFunc(feature, event string, callback func(ctx context.Context, payload interface{}))
+}
+
 // Dispatcher wires resource lifecycle events to workflow execution.
 // It reads from a DispatchTable and delegates to an Executor.
 type Dispatcher struct {
@@ -94,6 +100,47 @@ func (d *Dispatcher) Dispatch(ctx context.Context, resourceType, event string, i
 	}
 
 	return mainRun, nil
+}
+
+// RegisterHooks registers async reactions so that post_create and
+// post_delete events trigger workflow dispatch. Call this after all
+// WorkflowProviders have registered their actions.
+func (d *Dispatcher) RegisterHooks(registrar ReactionRegistrar) {
+	for _, rt := range d.table.ResourceTypes() {
+		resourceType := rt
+
+		if len(d.table.Lookup(resourceType, "create")) > 0 {
+			registrar.RegisterReactionFunc(resourceType, "post_create", func(ctx context.Context, payload interface{}) {
+				input := map[string]interface{}{"resource": payload}
+				run, err := d.Dispatch(ctx, resourceType, "create", input)
+				if err != nil {
+					d.logger.Error().Err(err).Str("resource_type", resourceType).Msg("create dispatch failed")
+					return
+				}
+				if run != nil {
+					d.logger.Info().Str("resource_type", resourceType).Str("run_id", run.ID).Msg("create workflow submitted")
+				}
+			})
+		}
+
+		if len(d.table.Lookup(resourceType, "delete")) > 0 {
+			registrar.RegisterReactionFunc(resourceType, "post_delete", func(ctx context.Context, payload interface{}) {
+				input := map[string]interface{}{"resource": payload}
+				run, err := d.Dispatch(ctx, resourceType, "delete", input)
+				if err != nil {
+					d.logger.Error().Err(err).Str("resource_type", resourceType).Msg("delete dispatch failed")
+					return
+				}
+				if run != nil {
+					d.logger.Info().Str("resource_type", resourceType).Str("run_id", run.ID).Msg("delete workflow submitted")
+				}
+			})
+		}
+	}
+
+	d.logger.Info().
+		Int("resource_types", len(d.table.ResourceTypes())).
+		Msg("workflow dispatch hooks registered")
 }
 
 func mergeInputs(base, overlay map[string]interface{}) map[string]interface{} {
