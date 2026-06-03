@@ -21,6 +21,7 @@ import (
 	"github.com/fabiendupont/infractl/auth"
 	"github.com/fabiendupont/infractl/events"
 	"github.com/fabiendupont/infractl/work"
+	"github.com/fabiendupont/infractl/workflow"
 )
 
 // Context is what the core provides to providers at initialization.
@@ -60,4 +61,12 @@ type Context struct {
 	// Attribution determines the creator assigned to newly created
 	// resources. Nil when running without attribution support.
 	Attribution auth.AttributionLogic
+
+	// DispatchTable maps resource lifecycle events to workflow handlers.
+	// Nil when running without workflow dispatch.
+	DispatchTable *workflow.DispatchTable
+
+	// Executor runs workflow handlers. Nil when running without
+	// workflow dispatch.
+	Executor workflow.Executor
 }

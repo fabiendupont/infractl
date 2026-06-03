@@ -20,6 +20,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"google.golang.org/grpc"
+
+	"github.com/fabiendupont/infractl/workflow"
 )
 
 // Provider is the contract every infractl provider implements.
@@ -48,13 +50,13 @@ type GRPCProvider interface {
 	RegisterServices(s *grpc.Server)
 }
 
-// WorkflowProvider registers async workflows with a workflow engine.
-// The engine is provider-defined — Temporal, AAP, in-process, or other.
-// The registry type is intentionally interface{} to avoid coupling
-// infractl to a specific workflow engine.
+// WorkflowProvider registers resource lifecycle actions with the
+// dispatch table. Actions map (resource_type, event) to executor-specific
+// handler references. The executor (AAP, Temporal, in-process) is
+// configured separately.
 type WorkflowProvider interface {
 	Provider
-	RegisterWorkflows(registry interface{})
+	RegisterActions(table *workflow.DispatchTable)
 }
 
 // MigrationProvider manages its own DB tables. The returned fs.FS must
