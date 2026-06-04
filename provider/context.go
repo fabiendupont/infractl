@@ -69,4 +69,8 @@ type Context struct {
 	// Executor runs workflow handlers. Nil when running without
 	// workflow dispatch.
 	Executor workflow.Executor
+
+	// IdentityProvider manages organizations in an external identity
+	// system (Keycloak, Dex, etc.). Nil uses NoOpIdentityProvider.
+	IdentityProvider auth.IdentityProvider
 }
