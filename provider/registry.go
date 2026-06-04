@@ -29,6 +29,7 @@ type Registry struct {
 	features  map[string]string // feature name -> provider name
 	order     []string          // init order after dependency resolution
 	hooks     *hookRegistry
+	refs      refRegistry
 }
 
 // NewRegistry creates a new provider registry.
