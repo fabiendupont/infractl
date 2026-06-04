@@ -5,6 +5,7 @@ package main
 
 import (
 	"github.com/fabiendupont/infractl/examples/inventory"
+	"github.com/fabiendupont/infractl/platform/catalog"
 	"github.com/fabiendupont/infractl/platform/event"
 	"github.com/fabiendupont/infractl/platform/organization"
 	"github.com/fabiendupont/infractl/platform/policy"
@@ -19,6 +20,7 @@ func init() {
 	provider.RegisterProfileProviders(provider.ProfileDefault, []func() provider.Provider{
 		func() provider.Provider { return tenant.New() },
 		func() provider.Provider { return organization.New() },
+		func() provider.Provider { return catalog.New() },
 		func() provider.Provider { return event.New() },
 		func() provider.Provider { return secret.New() },
 		func() provider.Provider { return task.New() },
