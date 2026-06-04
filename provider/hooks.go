@@ -153,7 +153,7 @@ func (hr *HookRunner) FireAsync(ctx context.Context, feature, event string, payl
 						Msg("reaction panicked")
 				}
 			}()
-			r.Callback(ctx, payload)
+			r.Callback(context.Background(), payload)
 		}(reaction)
 	}
 }
