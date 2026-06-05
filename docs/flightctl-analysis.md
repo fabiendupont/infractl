@@ -4,7 +4,7 @@ This document analyzes how infractl could serve as the framework for FlightCtl, 
 
 ## Executive Summary
 
-infractl provides a strong foundation for FlightCtl's resource model, store, API, and auth layers — these are nearly identical in design. The gaps are in three areas: queue-driven task dispatch (FlightCtl uses Redis Streams), fleet rollout orchestration (domain-specific state machine), and device config templating (Git/OCI dependency resolution). These gaps are addressable as FlightCtl-specific providers and a queue backend, not framework changes.
+infractl provides a strong foundation for FlightCtl's resource model, store, API, auth, and background work layers — these are nearly identical in design. infractl's existing Valkey queue backend is wire-compatible with FlightCtl's Redis Streams usage. The remaining gaps are domain-specific: fleet rollout orchestration (state machine) and device config templating (Git/OCI dependency resolution). These belong in FlightCtl providers, not framework changes. **No infractl modifications are needed.**
 
 ## Resource Model — Direct Match
 
@@ -68,13 +68,9 @@ type Provider interface {
 
 Tasks are dispatched via events: `EventWithOrgId` arrives on a queue → task consumer routes to handler by Kind/Reason. Handlers include fleet rollout, selector matching, device rendering, resource sync.
 
-infractl has `work.Loop` (periodic) and `work.Queue` (PostgreSQL/Valkey). It does NOT have a Redis Streams backend or an event-driven task dispatcher.
+infractl already has `work.ValkeyQueue` using Valkey Streams (`XADD`/`XREADGROUP`/`XACK`). Valkey is the open-source fork of Redis — wire-compatible, same protocol, same commands. FlightCtl's Redis Streams usage is directly supported by infractl's existing Valkey backend.
 
-**Solution — two parts:**
-
-1. **Redis queue backend:** Add `work.RedisQueue` implementing `work.Queue`. This is a framework enhancement — FlightCtl, OSAC, and NICo all benefit from Redis-backed queues.
-
-2. **Event-driven task dispatch:** FlightCtl's `dispatchTasks` function routes events to handlers. This maps to infractl's `workflow.DispatchTable` — the resource type + event determines which handler runs. FlightCtl would use `WorkflowProvider.RegisterActions()` to register its task handlers (fleet rollout, device render, etc.) and infractl's dispatcher would route events to them.
+**Event-driven task dispatch:** FlightCtl's `dispatchTasks` function routes events to handlers. This maps to infractl's `workflow.DispatchTable` — the resource type + event determines which handler runs. FlightCtl would use `WorkflowProvider.RegisterActions()` to register its task handlers (fleet rollout, device render, etc.) and infractl's dispatcher would route events to them.
 
 ## Agent Communication — Addressable
 
@@ -118,22 +114,22 @@ This is FlightCtl-specific and belongs in a provider. infractl provides no templ
 
 | Gap | Effort | Where |
 |-----|--------|-------|
-| Redis queue backend | Small | infractl (work/redis_queue.go) |
 | Multi-auth routing | Small | FlightCtl provider |
 | mTLS device auth | Small | FlightCtl provider |
 | API version routing | Small | FlightCtl provider |
 | Event-driven task dispatch | Already done | infractl workflow.Dispatcher |
+| Queue backend (Redis/Valkey) | Already done | infractl work.ValkeyQueue |
 | Fleet rollout orchestration | Medium | FlightCtl provider |
 | Config templating + rendering | Medium | FlightCtl provider |
 | Device agent transport | Small | FlightCtl provider |
 
-**Framework changes needed:** Only the Redis queue backend. Everything else is FlightCtl-specific providers.
+**Framework changes needed:** None. Everything is either already in infractl or belongs in FlightCtl-specific providers.
 
 ## Migration Path
 
 1. **Phase 1 — Foundation:** Port Device, Fleet, Repository models to infractl providers. Use infractl's store, API, auth. Verify CRUD + tenant isolation works.
 
-2. **Phase 2 — Background work:** Add Redis queue backend to infractl. Port task dispatch to WorkflowProvider. Port fleet rollout as a work loop.
+2. **Phase 2 — Background work:** Port task dispatch to WorkflowProvider using infractl's ValkeyQueue (wire-compatible with existing Redis). Port fleet rollout as a work loop.
 
 3. **Phase 3 — Agent transport:** Add device status endpoints. Implement mTLS authenticator. Port config rendering.
 
