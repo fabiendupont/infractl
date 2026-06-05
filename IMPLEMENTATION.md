@@ -9,8 +9,8 @@ Read `docs/source-projects.md` for exact file paths to reference implementations
 - **Compiles**: All packages build and pass `go vet`
 - **Unit tests pass**: auth/, provider/, resource/, resource/mixins/, resource/traits/, work/
 - **Integration/e2e tests written**: tests/integration/ and tests/e2e/ — require Podman or Docker for testcontainers-go PostgreSQL
-- **All core packages implemented**: resource/ (model, store, filter, pagination, mixins, traits, parent nesting, finalizers, creator, InstrumentedStore, PartialUpdate), api/ (server, middleware, handlers, OpenAPI, Prometheus metrics), auth/ (authn, authz, tenancy, Keycloak, OPA, ContextAuthenticator, AttributionLogic), provider/ (registry, hooks, profiles, discovery, external via gRPC, GRPCProvider, WorkflowProvider), events/ (in-memory bus, PostgreSQL bus, Valkey bus, Valkey queue, event store), work/ (loops, queue), workflow/ (dispatch table, executor, local executor, dispatcher), grpc/ (server, gateway, interceptors, generic service handler, errors)
-- **Platform providers**: platform/ (tenant, event, secret, task, webhook, policy)
+- **All core packages implemented**: resource/ (model, store, filter, pagination, mixins, traits, parent nesting, finalizers, creator, InstrumentedStore, PartialUpdate, StatusUpdater), api/ (server, middleware, handlers, OpenAPI, Prometheus metrics), auth/ (authn, authz, tenancy, Keycloak, OPA, ContextAuthenticator, AttributionLogic, IdentityProvider), provider/ (registry, hooks, profiles, discovery, external via gRPC, GRPCProvider, WorkflowProvider, declarative ResourceRef), events/ (in-memory bus, PostgreSQL bus, Valkey bus, Valkey queue, event store), work/ (loops, queue), workflow/ (dispatch table, executor, local executor, dispatcher), grpc/ (server, gateway, interceptors, generic service handler, errors)
+- **Platform providers**: platform/ (tenant, event, secret, task, webhook, policy, catalog, organization)
 - **Protobuf adapter**: resource/proto/ (Metadata proto, MetadataToProto/MetadataFromProto)
 - **Entry points**: cmd/infractl-server/ (server binary), cmd/infractl/ (CLI with machines and capabilities commands)
 - **Reference provider**: examples/inventory/ (model, handler, provider, OpenAPI spec)
@@ -73,7 +73,7 @@ All 8 gaps identified in the OSAC compatibility analysis have been closed:
 
 ## Platform Providers — DONE
 
-Six built-in providers registered via the default profile:
+Eight built-in providers registered via the default profile:
 
 1. **Tenant** — system tenant (well-known UUID `00000000-0000-0000-0000-000000000000`), global tenant CRUD
 2. **Event** — read-only access over persisted `EventRecord`
@@ -81,8 +81,10 @@ Six built-in providers registered via the default profile:
 4. **Task** — read-only view over `TaskRecord` with `/cancel`
 5. **Webhook** — event subscriptions and delivery loop
 6. **Policy** — RBAC rules managed as resources
+7. **CatalogItem** — binds tenant offerings to provisioning metadata (platform/catalog/)
+8. **Organization** — first-class org resource with IdentityProvider integration (platform/organization/)
 
-E2e tests cover all six providers.
+E2e tests cover all eight providers.
 
 ## Workflow Dispatch — DONE
 
@@ -104,15 +106,22 @@ E2e tests cover all six providers.
 - `SetOrgID(uuid.UUID)` on `ResourceAccessor`
 - `PartialUpdate` on Store for field-level updates with optimistic concurrency
 - `InstrumentedStore[R]` wrapping any Store with Prometheus histogram per operation
+- `StatusUpdater` (`resource/status_updater.go`) — updates status JSONB by org+name, used by workflow polling callbacks
 
-## What's Next
+## Provider Enhancements — DONE
+
+- Declarative `ResourceRef` (`provider/refs.go`) — providers declare cross-resource references; the framework auto-registers pre_create sync hooks to validate referenced resources exist
+- `IdentityProvider` interface (`auth/identity_provider.go`) — manages organizations in external identity systems (Keycloak, Dex, Okta); `NoOpIdentityProvider` for development; `OrgProvisionResult` for provisioning output
+
+## Async Reaction Fix (v0.2.1)
+
+- `FireAsync` now uses `context.Background()` instead of the request context, preventing cancelled contexts from aborting in-flight async reactions
+
+## What's Next (v0.4.0+)
 
 Potential future work (not yet prioritized):
 
-- **Status polling** — background loops that poll external systems for resource status updates
 - **Hub discovery** — multi-cluster provider discovery and registration
-- **Cross-resource validation** — sync hooks that validate references between resource types across providers
-- **Organization resource** — first-class Organization resource type to replace raw org_id UUIDs
 - **osac-infractl CI** — CI pipeline for the osac-infractl consumer project
 - **Example external provider sidecar** — a minimal out-of-process provider to demonstrate the gRPC protocol
 - **OpenTelemetry tracing** — distributed tracing for requests across REST and gRPC

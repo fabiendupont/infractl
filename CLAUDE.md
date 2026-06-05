@@ -21,7 +21,7 @@ Provider-based extensible platform. The core provides:
 - **Event system** -- PostgreSQL NOTIFY, Valkey PUBLISH, with sync and async hooks
 - **Work loops** -- Background task processing and reconciliation queues
 - **Workflow dispatch** -- Dispatch table, executor interface, hook-to-executor wiring
-- **Platform providers** -- Built-in tenant, event, secret, task, webhook, and policy providers
+- **Platform providers** -- Built-in tenant, event, secret, task, webhook, policy, catalog, and organization providers
 
 Domain functionality lives in **providers** that implement a standard interface and register themselves with the core registry. Providers are composed into deployable binaries via compile-time profiles.
 
@@ -53,7 +53,8 @@ infractl/
                         Base Resource type with metadata, spec/status (JSONB),
                         parent nesting, finalizers, creator attribution.
                         Store interface with CRUD, PartialUpdate, soft delete.
-                        InstrumentedStore for Prometheus metrics.
+                        InstrumentedStore for Prometheus metrics. StatusUpdater
+                        for workflow polling callbacks.
 
   resource/proto/       Protobuf adapter for resource metadata
                         Shared Metadata proto message, MetadataToProto and
@@ -64,16 +65,19 @@ infractl/
                         handler factories for standard CRUD endpoints. Middleware
                         chain handles auth, tenancy, logging, and error mapping.
 
-  auth/                 Authentication, authorization, tenancy
+  auth/                 Authentication, authorization, tenancy, identity
                         Token validation (Keycloak), RBAC (OPA), org_id enforcement.
                         ContextAuthenticator for gRPC. AttributionLogic interface
                         with SubjectAttributionLogic and GuestAttributionLogic.
+                        IdentityProvider interface for external org provisioning
+                        (Keycloak, Dex, Okta) with NoOpIdentityProvider for dev.
 
-  provider/             Provider interface, registry, hooks, profiles
+  provider/             Provider interface, registry, hooks, profiles, refs
                         Provider, APIProvider, GRPCProvider, WorkflowProvider
                         interfaces. Registry manages lifecycle (init, start, stop).
                         Profiles select providers for a binary. Hook points for
                         resource events. External provider gRPC sidecar protocol.
+                        Declarative ResourceRef with auto-validation sync hooks.
 
   events/               Event bus and CRUD lifecycle hooks
                         In-memory, PostgreSQL NOTIFY/LISTEN, and Valkey PUBLISH
@@ -96,9 +100,11 @@ infractl/
                         CRUD over gRPC, error mapping.
 
   platform/             Built-in platform providers
-                        tenant, event, secret, task, webhook, policy — provide
-                        common infrastructure management capabilities out of
-                        the box.
+                        tenant, event, secret, task, webhook, policy, catalog,
+                        organization — provide common infrastructure management
+                        capabilities out of the box. CatalogItem binds tenant
+                        offerings to provisioning metadata. Organization provides
+                        first-class org resources with IdentityProvider integration.
 
   examples/inventory/   Reference provider implementation
                         Minimal working provider that demonstrates registration,
